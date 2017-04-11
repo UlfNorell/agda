@@ -58,6 +58,15 @@ instance GetDefs Term where
     DontCare v -> getDefs v
     Shared p   -> getDefs $ derefPtr p  -- TODO: exploit sharing!
 
+instance GetDefs a => GetDefs (Substitution' a) where
+  getDefs rho = case rho of
+    IdS              -> return ()
+    EmptyS           -> return ()
+    t :# rho         -> getDefs (t, rho)
+    Strengthen _ rho -> getDefs rho
+    Wk n rho         -> getDefs rho
+    Lift n rho       -> getDefs rho
+
 instance GetDefs MetaId where
   getDefs x = doMeta x
 
