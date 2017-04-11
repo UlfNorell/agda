@@ -44,6 +44,7 @@ import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, mconcat)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
+import {-# SOURCE #-} Agda.TypeChecking.Substitute
 
 import Agda.Utils.Functor
 import Agda.Utils.Monad
@@ -272,6 +273,7 @@ instance Free Term where
     Level l    -> freeVars' l
     MetaV _ ts -> flexible <$> freeVars' ts
     DontCare mt -> irrelevantly <$> freeVars' mt
+    Let rho v   -> freeVars' (applySubstTm rho v) -- TODO: be smarter!
     Shared p    -> freeVars' (derefPtr p)
 
 instance Free Type where

@@ -274,6 +274,7 @@ instance Occurs Term where
           Pi a b      -> uncurry Pi <$> occ (leaveTop ctx) (a,b)
           Sort s      -> Sort <$> occ (leaveTop ctx) s
           v@Shared{}  -> updateSharedTerm (occ ctx) v
+          v@Let{}     -> occ ctx (ignoreSharing v)
           MetaV m' es -> do
               -- Check for loop
               --   don't fail hard on this, since we might still be on the top-level
@@ -335,6 +336,7 @@ instance Occurs Term where
       Pi a b     -> metaOccurs m (a,b)
       Sort s     -> metaOccurs m s
       Shared p   -> metaOccurs m $ derefPtr p
+      v@Let{}    -> metaOccurs m $ ignoreSharing v
       MetaV m' vs | m == m' -> patternViolation' 50 $ "Found occurrence of " ++ prettyShow m
                   | otherwise -> metaOccurs m vs
 
@@ -536,6 +538,7 @@ hasBadRigid xs t = do
     Lit{}        -> failure -- matchable
     MetaV{}      -> failure -- potentially matchable
     Shared p     -> __IMPOSSIBLE__
+    Let{}        -> __IMPOSSIBLE__
 
 -- | Check whether a term @Def f es@ is finally stuck.
 --   Currently, we give only a crude approximation.
@@ -604,6 +607,7 @@ instance FoldRigid Term where
       MetaV{}    -> mempty
       DontCare{} -> mempty
       Shared{}   -> __IMPOSSIBLE__
+      Let{}      -> __IMPOSSIBLE__
     where fold = foldRigid f
 
 instance FoldRigid Type where

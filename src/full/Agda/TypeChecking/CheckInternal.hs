@@ -93,6 +93,7 @@ checkType' t = do
     v@Level{}  -> typeError $ InvalidType v
     DontCare v -> checkType' $ t $> v
     Shared{}   -> __IMPOSSIBLE__
+    Let{}      -> __IMPOSSIBLE__
 
 checkTypeSpine :: Type -> Term -> Elims -> TCM Sort
 checkTypeSpine a self es = shouldBeSort =<< do snd <$> inferSpine a self es
@@ -200,6 +201,7 @@ checkInternal' action v t = do
       Level l <$ ((`subtype` t) =<< levelType)
     DontCare v -> DontCare <$> checkInternal' action v t
     Shared{}   -> __IMPOSSIBLE__
+    Let{}      -> __IMPOSSIBLE__
 
 checkSpine :: Action -> Type -> Term -> Elims -> Type -> TCM Term
 checkSpine action a self es t = do
@@ -402,6 +404,7 @@ inferSort t = case ignoreSharing t of
     Level{}    -> __IMPOSSIBLE__
     DontCare{} -> __IMPOSSIBLE__
     Shared{}   -> __IMPOSSIBLE__
+    Let{}      -> __IMPOSSIBLE__
 
 -- | @eliminate t self es@ eliminates value @self@ of type @t@ by spine @es@
 --   and returns the remaining value and its type.

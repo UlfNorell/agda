@@ -104,6 +104,7 @@ instance EmbPrj I.Term where
   icod_ (MetaV    a b) = __IMPOSSIBLE__
   icod_ (DontCare a  ) = icode1 8 a
   icod_ (Level    a  ) = icode1 9 a
+  icod_ (Let      a b) = icode2 10 a b
   icod_ (Shared p)     = icodeMemo termD termC p $ icode (derefPtr p)
 
   value r = vcase valu' r where
@@ -118,6 +119,7 @@ instance EmbPrj I.Term where
     valu [7, a]    = valu1 Sort  a
     valu [8, a]    = valu1 DontCare a
     valu [9, a]    = valu1 Level a
+    valu [10, a, b] = valu2 Let a b
     valu _         = malformed
 
 instance EmbPrj a => EmbPrj (Substitution' a) where

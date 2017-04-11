@@ -9,6 +9,7 @@ import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Substitute.DeBruijn
+import {-# SOURCE #-} Agda.TypeChecking.Substitute
 
 import Agda.Utils.Empty
 
@@ -258,10 +259,12 @@ underLambdas n cont a v = loop n a v where
 -- * Explicit substitutions
 ---------------------------------------------------------------------------
 
--- | Remove top-level @Shared@ constructors.
+-- | Remove top-level @Shared@ and @Let@. TODO: currently pushes substitutions
+--   all the way through the term rather than pushing it only one step.
 ignoreSharing :: Term -> Term
 ignoreSharing v =
   case ignoreSharing' v of
+    Let sub v -> ignoreSharing (applySubstTm sub v)
     v         -> v
 
 ignoreSharingType :: Type -> Type

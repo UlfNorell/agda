@@ -905,6 +905,7 @@ instance ExtractCalls Term where
         extract l
 
       Shared{} -> __IMPOSSIBLE__
+      Let{}    -> __IMPOSSIBLE__
 
 -- | Extract recursive calls from level expressions.
 

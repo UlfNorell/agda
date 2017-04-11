@@ -354,6 +354,7 @@ substTerm term = normaliseStatic term >>= \ term ->
     I.Sort _  -> return C.TSort
     I.MetaV _ _ -> __IMPOSSIBLE__   -- we don't compiled if unsolved metas
     I.DontCare _ -> return C.TErased
+    I.Let{} -> __IMPOSSIBLE__ -- TODO: here we really should look at the let!
 
 normaliseStatic :: I.Term -> CC I.Term
 normaliseStatic v@(I.Def f es) = lift $ do

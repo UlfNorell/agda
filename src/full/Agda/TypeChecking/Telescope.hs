@@ -59,6 +59,7 @@ getOutputTypeName t = do
       MetaV{}  -> __IMPOSSIBLE__
       Pi{}     -> __IMPOSSIBLE__
       Shared{} -> __IMPOSSIBLE__
+      Let{}    -> __IMPOSSIBLE__
       DontCare{} -> __IMPOSSIBLE__
 
 -- | Flatten telescope: (Γ : Tel) -> [Type Γ]

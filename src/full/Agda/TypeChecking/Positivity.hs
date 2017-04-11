@@ -467,7 +467,7 @@ instance ComputeOccurrences Clause where
           makeEntry x = singleton (x, Just $ AnArg i)
 
 instance ComputeOccurrences Term where
-  occurrences v = case unSpine v of
+  occurrences v = case ignoreSharing $ unSpine v of
     Var i args -> do
       vars <- asks vars
       occs <- occurrences args
@@ -498,7 +498,8 @@ instance ComputeOccurrences Term where
     Lit{}        -> return emptyOB
     Sort{}       -> return emptyOB
     DontCare _   -> return emptyOB -- Andreas, 2011-09-09: do we need to check for negative occurrences in irrelevant positions?
-    Shared p     -> occurrences $ derefPtr p
+    Shared{}     -> __IMPOSSIBLE__
+    Let{}        -> __IMPOSSIBLE__
 
 instance ComputeOccurrences Level where
   occurrences (Max as) = occurrences as

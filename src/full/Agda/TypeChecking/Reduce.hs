@@ -354,6 +354,7 @@ slowReduceTerm v = do
       Var _ _  -> done
       Lam _ _  -> done
       DontCare _ -> done
+      Let rho v  -> slowReduceTerm (applySubst rho v)
       Shared{}   -> updateSharedTermF reduceB' v
     where
       -- NOTE: reduceNat can traverse the entire term.
@@ -704,6 +705,7 @@ instance Simplify Term where
       Var i vs   -> Var i    <$> simplify' vs
       Lam h v    -> Lam h    <$> simplify' v
       DontCare v -> dontCare <$> simplify' v
+      Let rho v  -> simplify' (applySubst rho v)
       Shared{}   -> updateSharedTerm simplify' v
 
 simplifyBlocked' :: Simplify t => Blocked t -> ReduceM t
@@ -867,6 +869,7 @@ instance Normalise Term where
                 Lam h b     -> Lam h <$> normalise' b
                 Sort s      -> sortTm <$> normalise' s
                 Pi a b      -> uncurry Pi <$> normalise' (a,b)
+                Let rho v   -> normalise' (applySubst rho v)    -- TODO: call-by-need?
                 Shared{}    -> updateSharedTerm normalise' v
                 DontCare _  -> return v
 
@@ -1030,6 +1033,7 @@ instance InstantiateFull Term where
           Sort s      -> sortTm <$> instantiateFull' s
           Pi a b      -> uncurry Pi <$> instantiateFull' (a,b)
           Shared{}    -> updateSharedTerm instantiateFull' v
+          Let rho v   -> uncurry Let <$> instantiateFull' (rho, v)
           DontCare v  -> dontCare <$> instantiateFull' v
 
 instance InstantiateFull Level where

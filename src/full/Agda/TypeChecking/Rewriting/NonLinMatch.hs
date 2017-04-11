@@ -167,6 +167,7 @@ instance PatternFrom Term NLPat where
       DontCare{} -> return PWild
       MetaV{}    -> __IMPOSSIBLE__
       Shared{}   -> __IMPOSSIBLE__
+      Let{}      -> __IMPOSSIBLE__
 
 instance (PatternFrom a b) => PatternFrom (Abs a) (Abs b) where
   patternFrom r k (Abs name x)   = Abs name   <$> patternFrom r (k+1) x

@@ -287,7 +287,7 @@ noShadowingOfConstructors mkCall problem =
       ]
     reportSLn "tc.lhs.shadow" 70 $ "  t = " ++ show t
     t <- reduce t
-    case t of
+    case ignoreSharing t of
       Def t _ -> do
         d <- theDef <$> getConstInfo t
         case d of
@@ -311,7 +311,8 @@ noShadowingOfConstructors mkCall problem =
       Var   {} -> return ()
       Pi    {} -> return ()
       Sort  {} -> return ()
-      Shared p -> noShadowing (A.VarP x) $ derefPtr p
+      Shared{} -> __IMPOSSIBLE__
+      Let{}    -> __IMPOSSIBLE__
       MetaV {} -> return ()
       -- TODO: If the type is a meta-variable, should the test be
       -- postponed? If there is a problem, then it will be caught when

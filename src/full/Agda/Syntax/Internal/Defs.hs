@@ -56,6 +56,7 @@ instance GetDefs Term where
     Level l    -> getDefs l
     MetaV x vs -> getDefs x >> getDefs vs
     DontCare v -> getDefs v
+    Let rho v  -> getDefs rho >> getDefs v
     Shared p   -> getDefs $ derefPtr p  -- TODO: exploit sharing!
 
 instance GetDefs a => GetDefs (Substitution' a) where

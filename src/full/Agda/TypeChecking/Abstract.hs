@@ -158,6 +158,7 @@ instance AbsTerm Term where
       MetaV m vs  -> MetaV m $ absT vs
       DontCare mv -> DontCare $ absT mv
       Shared p    -> Shared $ absT p
+      v@Let{}     -> absT (ignoreSharing v) -- TODO: do better?
       where
         absT x = absTerm u x
 

@@ -298,6 +298,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
             b              -> b
         Lit{} -> done
         Var{} -> done
+        Let rho v -> reduceB' steps (applySubst rho v)  -- TODO: do better?
         _     -> runReduce (slowReduceTerm v)
       where
         done = notBlocked v
@@ -392,6 +393,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
               MetaV{}    -> False
               Var{}      -> False
               Def q _    -> isTyCon q
+              Let{}      -> __IMPOSSIBLE__
               Shared{}   -> __IMPOSSIBLE__
 
             isTyCon q =

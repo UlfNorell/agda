@@ -42,6 +42,7 @@ binAppView t = case t of
   Sort _     -> noApp
   MetaV _ _  -> noApp
   DontCare _ -> noApp
+  Let rho v  -> binAppView (applySubst rho v) -- TODO: don't destroy sharing
   Shared p   -> binAppView (derefPtr p)  -- destroys sharing
   where
     noApp = NoApp t

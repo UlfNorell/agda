@@ -64,6 +64,7 @@ instance Apply Term where
           _             -> __IMPOSSIBLE__
       MetaV x es' -> MetaV x (es' ++ es)
       Shared p    -> Shared $ applyE p es
+      Let rho v   -> applySubst rho v `applyE` es -- TODO: Could we do better?
       Lit{}       -> __IMPOSSIBLE__
       Level{}     -> __IMPOSSIBLE__
       Pi _ _      -> __IMPOSSIBLE__
@@ -679,6 +680,7 @@ instance Subst Term Term where
     Pi a b      -> uncurry Pi $ applySubst rho (a,b)
     Sort s      -> sortTm $ applySubst rho s
     Shared p    -> Shared $ applySubst rho p
+    Let sgm v   -> Let (applySubst rho sgm) v
     DontCare mv -> dontCare $ applySubst rho mv
 
 -- | Exported by boot file.
@@ -1056,6 +1058,9 @@ instance Eq Term where
   Level l    == Level l'     = l == l'
   MetaV m vs == MetaV m' vs' = m == m' && vs == vs'
   DontCare _ == DontCare _   = True
+  Let rho u  == Let sgm v | (rho, u) == (sgm, v) = True
+  Let rho u  == v            = applySubst rho u == v  -- TODO: Can we be smarter? Or maybe we simply
+  u          == Let sgm v    = u == applySubst sgm v  -- shouldn't push subsitutions in syntactic equality?
   Shared p   == Shared q     = p == q || derefPtr p == derefPtr q
   Shared p   == b            = derefPtr p == b
   a          == Shared q     = a == derefPtr q
@@ -1092,6 +1097,9 @@ instance Ord Term where
   MetaV a b  `compare` MetaV x y  = compare (a, b) (x, y)
   MetaV{}    `compare` _          = LT
   _          `compare` MetaV{}    = GT
+  Let a b    `compare` Let x y | (a, b) == (x, y) = EQ
+  Let rho u  `compare` v          = compare (applySubst rho u) v
+  u          `compare` Let sgm v  = compare u (applySubst sgm v)
   DontCare{} `compare` DontCare{} = EQ
 
 instance (Subst t a, Eq a) => Eq (Abs a) where
@@ -1114,6 +1122,7 @@ instance (Subst t a, Ord a) => Ord (Elim' a) where
   Proj _ x `compare` Proj _ y = x `compare` y
   Apply{}  `compare` Proj{}   = LT
   Proj{}   `compare` Apply{}  = GT
+
 
 ---------------------------------------------------------------------------
 -- * Level stuff
@@ -1316,6 +1325,7 @@ hasElims v =
     Sort{}     -> Nothing
     Level{}    -> Nothing
     DontCare{} -> Nothing
+    Let{}      -> __IMPOSSIBLE__
     Shared{}   -> __IMPOSSIBLE__
 
 -- Misc -------------------------------------------------------------------

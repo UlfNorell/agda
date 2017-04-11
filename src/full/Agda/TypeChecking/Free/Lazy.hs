@@ -38,6 +38,7 @@ import Data.Set (Set)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
+import {-# SOURCE #-} Agda.TypeChecking.Substitute
 
 -- import Agda.TypeChecking.Irrelevance
 
@@ -234,6 +235,7 @@ instance Free' Term c where
     Level l      -> freeVars' l
     MetaV m ts   -> go (Flexible $ singleton m) $ freeVars' ts
     DontCare mt  -> goRel Irrelevant $ freeVars' mt
+    Let rho v    -> freeVars' (applySubstTm rho v)  -- TODO: be smarter!
     Shared p     -> freeVars' (derefPtr p)
 
 instance Free' a c => Free' (Type' a) c where

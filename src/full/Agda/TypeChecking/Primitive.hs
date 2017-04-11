@@ -464,6 +464,7 @@ genPrimForce b ret = do
                 MetaV{}    -> return False
                 Var{}      -> return False
                 Shared{}   -> __IMPOSSIBLE__
+                Let{}      -> __IMPOSSIBLE__
 
         ifM (isWHNF u)
             (redReturn $ ret (unArg f) (ignoreBlocking u))

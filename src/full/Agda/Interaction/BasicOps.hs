@@ -666,7 +666,7 @@ metaHelperType norm ii rng s = case words s of
     onNamesTel f I.EmptyTel = pure I.EmptyTel
     onNamesTel f (I.ExtendTel a b) = I.ExtendTel <$> traverse (onNames f) a <*> onNamesAbs f onNamesTel b
 
-    onNamesTm f v = case v of
+    onNamesTm f v = case ignoreSharing v of
       I.Var x es   -> I.Var x <$> onNamesElims f es
       I.Def q es   -> I.Def q <$> onNamesElims f es
       I.Con c ci args -> I.Con c ci <$> onNamesArgs f args
@@ -677,7 +677,8 @@ metaHelperType norm ii rng s = case words s of
       I.Sort{}     -> pure v
       I.Level{}    -> pure v
       I.MetaV{}    -> pure v
-      I.Shared{}   -> pure v
+      I.Shared{}   -> __IMPOSSIBLE__
+      I.Let{}      -> __IMPOSSIBLE__
     onNamesElims f = traverse $ traverse $ onNamesTm f
     onNamesArgs f  = traverse $ traverse $ onNamesTm f
     onNamesAbs f   = onNamesAbs' f (stringToArgName <.> f . argNameToString)

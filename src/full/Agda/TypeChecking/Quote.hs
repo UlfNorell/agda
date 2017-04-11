@@ -201,7 +201,7 @@ quotingKit = do
 
       quoteTerm :: Term -> ReduceM Term
       quoteTerm v =
-        case unSpine v of
+        case ignoreSharing $ unSpine v of
           Var n es   ->
              let ts = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
              in  var !@! Lit (LitNat noRange $ fromIntegral n) @@ quoteArgs ts
@@ -237,10 +237,11 @@ quotingKit = do
           Level l    -> quoteTerm (unlevelWithKit lkit l)
           Lit l      -> lit !@ quoteLit l
           Sort s     -> sort !@ quoteSort s
-          Shared p   -> quoteTerm $ derefPtr p
           MetaV x es -> meta !@! quoteMeta currentFile x @@ quoteArgs vs
             where vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
           DontCare{} -> pure unsupported -- could be exposed at some point but we have to take care
+          Shared{} -> __IMPOSSIBLE__
+          Let{} -> __IMPOSSIBLE__
 
       defParameters :: Definition -> [ReduceM Term]
       defParameters def = map par hiding

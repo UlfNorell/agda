@@ -90,7 +90,7 @@ haskellType' t = fromType t
       v   <- unSpine <$> reduce v
       reportSLn "compile.haskell.type" 50 $ "toHaskellType " ++ show v
       kit <- liftTCM coinductionKit
-      case v of
+      case ignoreSharing v of
         Var x es -> do
           let args = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
           hsApp <$> getHsVar x <*> fromArgs args
@@ -113,7 +113,8 @@ haskellType' t = fromType t
         Level{}    -> return hsUnit
         Lit{}      -> return hsUnit
         Sort{}     -> return hsUnit
-        Shared p   -> fromTerm $ derefPtr p
+        Shared{}   -> __IMPOSSIBLE__
+        Let{}      -> __IMPOSSIBLE__
         MetaV{}    -> err
         DontCare{} -> err
 

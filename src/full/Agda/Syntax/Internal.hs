@@ -125,6 +125,9 @@ data Term = Var {-# UNPACK #-} !Int Elims -- ^ @x es@ neutral
             --   version of the irrelevance axiom @.irrAx : .A -> A@.
           | Shared !(Ptr Term)
             -- ^ Explicit sharing
+          | Let Substitution Term
+            -- ^ Explicit substitution. Covers the entire context of the body. So, if
+            --   @Γ ⊢ v : A@, and @Δ ⊢ ρ : Γ@, then @Δ ⊢ Let ρ v : Aρ@.
   deriving (Typeable, Show)
 
 type ConInfo = ConOrigin
@@ -972,6 +975,7 @@ instance TermSize Term where
     Sort s      -> tsize s
     DontCare mv -> tsize mv
     Shared p    -> tsize (derefPtr p)
+    Let s v     -> 1 + tsize s + tsize v
 
 instance TermSize Sort where
   tsize s = case s of
@@ -1021,6 +1025,7 @@ instance KillRange Term where
     Pi a b      -> killRange2 Pi a b
     Sort s      -> killRange1 Sort s
     DontCare mv -> killRange1 DontCare mv
+    Let rho v   -> killRange2 Let rho v
     Shared p    -> Shared $ updatePtr killRange p
 
 instance KillRange Level where
@@ -1134,6 +1139,9 @@ instance Pretty Term where
       Level l     -> prettyPrec p l
       MetaV x els -> pretty x `pApp` els
       DontCare v  -> prettyPrec p v
+      Let rho v   -> mparens (p > 0) $
+                      sep [ text "let" <+> prettyPrec 1 rho
+                          , text "in" <+> pretty v ]
       Shared{}    -> __IMPOSSIBLE__
     where
       pApp d els = mparens (not (null els) && p > 9) $
@@ -1243,6 +1251,7 @@ instance NFData Term where
     Level l    -> rnf l
     MetaV _ es -> rnf es
     DontCare v -> rnf v
+    Let s v    -> rnf (s, v)
     Shared{}   -> ()
 
 instance NFData Type where
@@ -1272,3 +1281,12 @@ instance NFData LevelAtom where
 instance NFData a => NFData (Elim' a) where
   rnf (Apply x) = rnf x
   rnf Proj{}    = ()
+
+instance NFData a => NFData (Substitution' a) where
+  rnf s = case s of
+    IdS              -> ()
+    EmptyS           -> ()
+    t :# rho         -> rnf (t, rho)
+    Strengthen _ rho -> rnf rho
+    Wk n rho         -> rnf (n, rho)
+    Lift n rho       -> rnf (n, rho)

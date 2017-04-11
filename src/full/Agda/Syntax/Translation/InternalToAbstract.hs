@@ -451,6 +451,7 @@ reifyTerm expandAnonDefs0 v = do
         elims x' =<< reify es
     I.DontCare v -> A.DontCare <$> reifyTerm expandAnonDefs v
     I.Shared p   -> reifyTerm expandAnonDefs $ derefPtr p
+    v@I.Let{}    -> reifyTerm expandAnonDefs $ ignoreSharing v -- not impossible?
   where
     -- Andreas, 2012-10-20  expand a copy if not in scope
     -- to improve error messages.

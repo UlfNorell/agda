@@ -396,7 +396,7 @@ instance HasPolarity a => HasPolarity (Elim' a) where
 instance HasPolarity Term where
   polarities i v = do
    v <- instantiate v
-   case v of
+   case ignoreSharing v of
     -- Andreas, 2012-09-06: taking the polarities of the arguments
     -- without taking the variance of the function into account seems wrong.
     Var n ts  | n == i -> (Covariant :) . map (const Invariant) <$> polarities i ts
@@ -412,8 +412,9 @@ instance HasPolarity Term where
     Pi a b     -> (++) <$> (map neg <$> polarities i a) <*> polarities i b
     Sort s     -> return [] -- polarities i s -- return []
     MetaV _ ts -> map (const Invariant) <$> polarities i ts
-    Shared p   -> polarities i $ derefPtr p
     DontCare t -> polarities i t -- return []
+    Shared{}   -> __IMPOSSIBLE__
+    Let{}      -> __IMPOSSIBLE__
 
 instance HasPolarity Level where
   polarities i (Max as) = polarities i as

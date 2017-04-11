@@ -119,6 +119,7 @@ instance TermLike Term where
     Sort _      -> f t
     DontCare mv -> f $ DontCare $ traverseTerm f mv
     Shared p    -> f $ Shared $ traverseTerm f p
+    Let rho v   -> f $ uncurry Let $ traverseTerm f (rho, v)
 
   traverseTermM f t = case t of
     Var i xs    -> f =<< Var i <$> traverseTermM f xs
@@ -132,6 +133,7 @@ instance TermLike Term where
     Sort _      -> f t
     DontCare mv -> f =<< DontCare <$> traverseTermM f mv
     Shared p    -> f =<< Shared <$> traverseTermM f p
+    Let rho v   -> f =<< uncurry Let <$> traverseTermM f (rho, v)
 
   foldTerm f t = f t `mappend` case t of
     Var i xs    -> foldTerm f xs
@@ -145,6 +147,7 @@ instance TermLike Term where
     Sort _      -> mempty
     DontCare mv -> foldTerm f mv
     Shared p    -> foldTerm f p
+    Let rho v   -> foldTerm f (rho, v)
 
 instance TermLike a => TermLike (Substitution' a) where
   traverseTerm f rho = case rho of

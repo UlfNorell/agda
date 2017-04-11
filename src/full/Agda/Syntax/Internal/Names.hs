@@ -104,6 +104,7 @@ instance NamesIn Term where
     Level l      -> namesIn l
     MetaV _ args -> namesIn args
     DontCare v   -> namesIn v
+    Let rho v    -> namesIn (rho, v)
     Shared{}     -> __IMPOSSIBLE__
 
 instance NamesIn a => NamesIn (Substitution' a) where

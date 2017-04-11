@@ -1163,7 +1163,8 @@ inverseSubst args = map (mapFst unArg) <$> loop (zip args terms)
         Arg _ Sort{}     -> neutralArg
         Arg _ Level{}    -> neutralArg
 
-        Arg info (Shared p) -> isVarOrIrrelevant vars (Arg info $ derefPtr p, t)
+        Arg _ Shared{} -> __IMPOSSIBLE__
+        Arg _ Let{}    -> __IMPOSSIBLE__
 
     -- managing an assoc list where duplicate indizes cannot be irrelevant vars
     append :: Res -> Res -> Res

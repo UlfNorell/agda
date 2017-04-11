@@ -370,7 +370,7 @@ tomyType (I.El _ t) = tomyExp t -- sort info is thrown away
 
 tomyExp :: I.Term -> TOM (MExp O)
 tomyExp v0 =
-  case I.unSpine v0 of
+  case ignoreSharing $ I.unSpine v0 of
     I.Var v es -> do
       let Just as = I.allApplyElims es
       as' <- tomyExps as
@@ -420,7 +420,8 @@ tomyExp v0 =
           return $ Meta m
         _ -> tomyExp t
     I.DontCare _ -> return $ NotM $ dontCare
-    I.Shared p -> tomyExp $ I.derefPtr p
+    I.Shared{} -> __IMPOSSIBLE__
+    I.Let{}    -> __IMPOSSIBLE__
 
 tomyExps :: I.Args -> TOM (MM (ArgList O) (RefInfo O))
 tomyExps [] = return $ NotM ALNil
@@ -449,7 +450,8 @@ fmExp m (I.Pi x y)  = fmType m (Common.unDom x) || fmType m (I.unAbs y)
 fmExp m (I.Sort _) = False
 fmExp m (I.MetaV mid _) = mid == m
 fmExp m (I.DontCare _) = False
-fmExp m (I.Shared p) = fmExp m $ I.derefPtr p
+fmExp m v@I.Shared{} = fmExp m $ ignoreSharing v
+fmExp m v@I.Let{}    = fmExp m $ ignoreSharing v
 
 fmExps :: I.MetaId -> I.Args -> Bool
 fmExps m [] = False

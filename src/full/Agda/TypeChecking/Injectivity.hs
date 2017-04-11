@@ -77,6 +77,7 @@ headSymbol v = do -- ignoreAbstractMode $ do
     MetaV{} -> return Nothing
     DontCare{} -> return Nothing
     Shared{}   -> __IMPOSSIBLE__
+    Let{}      -> __IMPOSSIBLE__
 
 checkInjectivity :: QName -> [Clause] -> TCM FunctionInverse
 checkInjectivity f cs
