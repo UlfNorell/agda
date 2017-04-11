@@ -120,6 +120,23 @@ instance EmbPrj I.Term where
     valu [9, a]    = valu1 Level a
     valu _         = malformed
 
+instance EmbPrj a => EmbPrj (Substitution' a) where
+  icod_ IdS              = icode0'
+  icod_ EmptyS           = icode0 1
+  icod_ (a :# b)         = icode2 2 a b
+  icod_ (Strengthen _ a) = icode1 3 a
+  icod_ (Wk a b)         = icode2 4 a b
+  icod_ (Lift a b)       = icode2 5 a b
+
+  value = vcase valu where
+    valu []        = valu0 IdS
+    valu [1]       = valu0 EmptyS
+    valu [2, a, b] = valu2 (:#) a b
+    valu [3, a]    = valu1 (Strengthen __IMPOSSIBLE__) a
+    valu [4, a, b] = valu2 Wk a b
+    valu [5, a, b] = valu2 Lift a b
+    valu _         = malformed
+
 instance EmbPrj Level where
   icod_ (Max a) = icode1' a
 
