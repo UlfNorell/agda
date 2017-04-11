@@ -24,6 +24,15 @@ instance MentionsMeta Term where
     where
       mm v = mentionsMeta x v
 
+instance MentionsMeta a => MentionsMeta (Substitution' a) where
+  mentionsMeta x rho = case rho of
+    IdS              -> False
+    EmptyS           -> False
+    t :# rho         -> mentionsMeta x (t, rho)
+    Strengthen _ rho -> mentionsMeta x rho
+    Wk n rho         -> mentionsMeta x rho
+    Lift n rho       -> mentionsMeta x rho
+
 instance MentionsMeta Level where
   mentionsMeta x (Max as) = mentionsMeta x as
 
