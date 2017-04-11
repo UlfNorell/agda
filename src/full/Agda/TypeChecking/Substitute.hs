@@ -681,6 +681,10 @@ instance Subst Term Term where
     Shared p    -> Shared $ applySubst rho p
     DontCare mv -> dontCare $ applySubst rho mv
 
+-- | Exported by boot file.
+applySubstTm :: Substitution -> Term -> Term
+applySubstTm = applySubst
+
 instance Subst t a => Subst t (Ptr a) where
   applySubst rho = fmap (applySubst rho)
 
