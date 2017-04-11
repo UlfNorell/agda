@@ -21,6 +21,7 @@ import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Substitute
 import Agda.Utils.Monad
 import Agda.Utils.Except
 import Agda.Utils.Lens

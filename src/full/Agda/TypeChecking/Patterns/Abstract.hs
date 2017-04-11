@@ -20,6 +20,7 @@ import Agda.Syntax.Position
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Functor
 

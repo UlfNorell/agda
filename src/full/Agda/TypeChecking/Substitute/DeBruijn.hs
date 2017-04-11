@@ -3,6 +3,7 @@ module Agda.TypeChecking.Substitute.DeBruijn where
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
+import {-# SOURCE #-} Agda.TypeChecking.Substitute.Class (ignoreSharing)
 
 -- | Things we can substitute for a variable.
 --   Needs to be able to represent variables, e.g. for substituting under binders.

@@ -20,7 +20,7 @@ updateSharedTerm :: MonadReader TCEnv m => (Term -> m Term) -> Term -> m Term
 updateSharedTerm f v =
   ifM (asks envAllowDestructiveUpdate)
       (updateSharedM f v)
-      (f $ ignoreSharing v)
+      (f $ ignoreSharing' v)
 
 updateSharedTermF
 #if __GLASGOW_HASKELL__ <= 708
@@ -32,13 +32,13 @@ updateSharedTermF
 updateSharedTermF f v =
   ifM (asks envAllowDestructiveUpdate)
       (updateSharedFM f v)
-      (f $ ignoreSharing v)
+      (f $ ignoreSharing' v)
 
 updateSharedTermT :: (MonadTCM tcm, MonadTrans t, Monad (t tcm)) => (Term -> t tcm Term) -> Term -> t tcm Term
 updateSharedTermT f v =
   ifM (lift $ asks envAllowDestructiveUpdate)
       (updateSharedM f v)
-      (f $ ignoreSharing v)
+      (f $ ignoreSharing' v)
 
 forceEqualTerms :: Term -> Term -> TCM ()
 forceEqualTerms u v =

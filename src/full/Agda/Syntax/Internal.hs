@@ -625,13 +625,12 @@ isAbsurdPatternName x = x == absurdPatternName
 ---------------------------------------------------------------------------
 
 -- | Remove top-level @Shared@ data constructors.
-ignoreSharing :: Term -> Term
-ignoreSharing (Shared p) = ignoreSharing $ derefPtr p
-ignoreSharing v          = v
+ignoreSharing' :: Term -> Term
+ignoreSharing' (Shared p) = ignoreSharing' $ derefPtr p
+ignoreSharing' v          = v
 
-ignoreSharingType :: Type -> Type
-ignoreSharingType (El s v) = El s (ignoreSharing v)
--- ignoreSharingType v = v
+ignoreSharingType' :: Type -> Type
+ignoreSharingType' (El s v) = El s (ignoreSharing' v)
 
 -- | Introduce sharing.
 shared_ :: Term -> Term
@@ -1116,7 +1115,7 @@ instance Pretty a => Pretty (Substitution' a) where
 
 instance Pretty Term where
   prettyPrec p v =
-    case ignoreSharing v of
+    case ignoreSharing' v of
       Var x els -> text ("@" ++ show x) `pApp` els
       Lam ai b   ->
         mparens (p > 0) $

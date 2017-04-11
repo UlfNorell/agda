@@ -42,6 +42,7 @@ import qualified Agda.Syntax.Concrete.Definitions as D
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract (AllNames)
 import Agda.Syntax.Internal as I
+import Agda.TypeChecking.Substitute.Class
 import Agda.Syntax.Internal.Pattern ()
 import Agda.Syntax.Internal.Generic (TermLike(..))
 import Agda.Syntax.Parser (PM(..), ParseWarning, runPMIO)

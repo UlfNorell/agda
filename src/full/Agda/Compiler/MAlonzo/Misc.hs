@@ -19,6 +19,7 @@ import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Lens
 import Agda.Utils.Monad

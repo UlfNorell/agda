@@ -254,3 +254,16 @@ underLambdas n cont a v = loop n a v where
     Lam h b -> Lam h $ underAbs (loop $ n-1) a b
     _       -> __IMPOSSIBLE__
 
+---------------------------------------------------------------------------
+-- * Explicit substitutions
+---------------------------------------------------------------------------
+
+-- | Remove top-level @Shared@ constructors.
+ignoreSharing :: Term -> Term
+ignoreSharing v =
+  case ignoreSharing' v of
+    v         -> v
+
+ignoreSharingType :: Type -> Type
+ignoreSharingType (El s v) = El s (ignoreSharing v)
+
