@@ -90,3 +90,10 @@ align max rows =
 multiLineText :: String -> Doc
 multiLineText = vcat . map text . lines
 
+-- | @a <?> b = hang a 2 b@
+(<?>) :: Doc -> Doc -> Doc
+a <?> b = hang a 2 b
+
+pshow :: Show a => a -> Doc
+pshow = text . show
+
