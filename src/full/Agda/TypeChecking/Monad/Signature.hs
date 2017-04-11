@@ -75,7 +75,7 @@ addConstant q d = do
                     Just (doms, dom) -> telFromList $ fmap hideOrKeepInstance doms ++ [dom]
               _ -> tel
   let d' = abstract tel' $ d { defName = q }
-  reportSLn "tc.signature" 60 $ "lambda-lifted definition = " ++ show d'
+  reportSLn "tc.signature" 60 $ "lambda-lifted definition =\n" ++ show (nest 2 $ pretty d')
   modifySignature $ updateDefinitions $ HMap.insertWith (+++) q d'
   i <- currentOrFreshMutualBlock
   setMutualBlock i q
@@ -457,7 +457,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                         , funWith           = with
                         , funCopatternLHS   = isCopatternLHS [cl]
                         }
-                  reportSLn "tc.mod.apply" 80 $ "new def for " ++ show x ++ "\n  " ++ show newDef
+                  reportSLn "tc.mod.apply" 80 $ "new def for " ++ show x ++ "\n" ++ show (nest 2 $ pretty newDef)
                   return newDef
 
             cl = Clause { clauseLHSRange  = getRange $ defClauses d
