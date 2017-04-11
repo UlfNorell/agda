@@ -481,11 +481,27 @@ instance Abstract Permutation where
 --
 --   @piApply@ is potentially unsafe, the monadic 'piApplyM' is preferable.
 piApply :: Type -> Args -> Type
-piApply t []                      = t
-piApply (El _ (Pi  _ b)) (a:args) = lazyAbsApp b (unArg a) `piApply` args
-piApply (El s (Shared p)) args    = piApply (El s $ derefPtr p) args
-piApply t args                    =
-  trace ("piApply t = " ++ show t ++ "\n  args = " ++ show args) __IMPOSSIBLE__
+piApply = go IdS
+  where
+    -- Δ ⊢ t type, t == Θ → B
+    -- Γ ⊢ args : Θρ
+    -- Γ ⊢ ρ : Δ
+    -- Γ ⊢ go ρ t args type
+    go rho t [] = underEl (mkLet rho) t
+    go rho t (a : args) =
+      case ignoreSharing $ unEl t of
+        Pi _ (NoAbs _ b) -> go rho b args
+        Pi _ (Abs _ b)   -> go (unArg a :# rho) b args
+          -- Δ (x : A) ⊢ b type
+          -- Γ ⊢ ρ : Δ
+          -- Γ ⊢ a : Aρ
+        _ ->
+          trace ("piApply t = " ++ show t ++ "\n  args = " ++ show (a : args)) __IMPOSSIBLE__
+
+-- | Introduce a let. Eagerly fuses substitutions (TODO: is this a good idea?)
+mkLet :: Substitution -> Term -> Term
+mkLet rho (Let sgm v) = Let (rho `composeS` sgm) v
+mkLet rho v           = Let rho v
 
 ---------------------------------------------------------------------------
 -- * Abstraction
