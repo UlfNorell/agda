@@ -633,7 +633,11 @@ ignoreSharing' (Shared p) = ignoreSharing' $ derefPtr p
 ignoreSharing' v          = v
 
 ignoreSharingType' :: Type -> Type
-ignoreSharingType' (El s v) = El s (ignoreSharing' v)
+ignoreSharingType' = underEl ignoreSharing'
+
+-- | Apply a function under 'El'
+underEl :: (Term -> Term) -> Type -> Type
+underEl f (El s v) = El s (f v)
 
 -- | Introduce sharing.
 shared_ :: Term -> Term
