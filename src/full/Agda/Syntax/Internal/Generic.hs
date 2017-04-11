@@ -146,6 +146,31 @@ instance TermLike Term where
     DontCare mv -> foldTerm f mv
     Shared p    -> foldTerm f p
 
+instance TermLike a => TermLike (Substitution' a) where
+  traverseTerm f rho = case rho of
+    IdS              -> rho
+    EmptyS           -> rho
+    t :# rho         -> uncurry (:#) $ traverseTerm f (t, rho)
+    Strengthen e rho -> Strengthen e $ traverseTerm f rho
+    Wk n rho         -> Wk n $ traverseTerm f rho
+    Lift n rho       -> Lift n $ traverseTerm f rho
+
+  traverseTermM f rho = case rho of
+    IdS              -> pure rho
+    EmptyS           -> pure rho
+    t :# rho         -> uncurry (:#) <$> traverseTermM f (t, rho)
+    Strengthen e rho -> Strengthen e <$> traverseTermM f rho
+    Wk n rho         -> Wk n <$> traverseTermM f rho
+    Lift n rho       -> Lift n <$> traverseTermM f rho
+
+  foldTerm f rho = case rho of
+    IdS              -> mempty
+    EmptyS           -> mempty
+    t :# rho         -> foldTerm f (t, rho)
+    Strengthen e rho -> foldTerm f rho
+    Wk n rho         -> foldTerm f rho
+    Lift n rho       -> foldTerm f rho
+
 instance TermLike Level where
   traverseTerm f  (Max as) = Max $ traverseTerm f as
   traverseTermM f (Max as) = Max <$> traverseTermM f as
