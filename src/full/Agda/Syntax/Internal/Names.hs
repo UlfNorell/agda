@@ -106,6 +106,15 @@ instance NamesIn Term where
     DontCare v   -> namesIn v
     Shared{}     -> __IMPOSSIBLE__
 
+instance NamesIn a => NamesIn (Substitution' a) where
+  namesIn rho = case rho of
+    IdS              -> Set.empty
+    EmptyS           -> Set.empty
+    t :# rho         -> namesIn (t, rho)
+    Strengthen _ rho -> namesIn rho
+    Wk n rho         -> namesIn rho
+    Lift n rho       -> namesIn rho
+
 instance NamesIn Level where
   namesIn (Max ls) = namesIn ls
 
