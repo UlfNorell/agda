@@ -60,7 +60,7 @@ import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Pretty
-import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Substitute as I
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Level (reallyUnLevelView)
 

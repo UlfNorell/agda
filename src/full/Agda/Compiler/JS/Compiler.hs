@@ -29,12 +29,12 @@ import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Internal
   ( Name, Args, Type,
     conName,
-    toTopLevelModuleName, arity, unEl, unAbs, nameFixity )
+    toTopLevelModuleName, unEl, unAbs, nameFixity )
 import Agda.Syntax.Position
 import Agda.Syntax.Literal ( Literal(LitNat,LitFloat,LitString,LitChar,LitQName,LitMeta) )
 import Agda.Syntax.Fixity
 import qualified Agda.Syntax.Treeless as T
-import Agda.TypeChecking.Substitute ( absBody )
+import Agda.TypeChecking.Substitute ( absBody, arity )
 import Agda.TypeChecking.Level ( reallyUnLevelView )
 import Agda.TypeChecking.Monad hiding (Global, Local)
 import Agda.TypeChecking.Monad.Builtin

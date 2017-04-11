@@ -25,7 +25,7 @@ import Agda.TypeChecking.Monad.Base (mvJudgement, mvPermutation, getMetaInfo, ct
 import Agda.TypeChecking.Monad.MetaVars (lookupMeta, withMetaInfo, lookupInteractionPoint)
 import Agda.TypeChecking.Monad.Context (getContextArgs)
 import Agda.TypeChecking.Monad.Constraints (getAllConstraints)
-import Agda.TypeChecking.Substitute (piApply, applySubst, renamingR)
+import Agda.TypeChecking.Substitute as I hiding (dontCare)
 import Agda.TypeChecking.Telescope (piApplyM)
 import qualified Agda.TypeChecking.Substitute as I (absBody)
 import Agda.TypeChecking.Reduce (Normalise, normalise, instantiate)

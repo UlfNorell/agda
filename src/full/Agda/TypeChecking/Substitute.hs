@@ -34,7 +34,7 @@ import qualified Agda.Syntax.Abstract as A
 
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Free as Free
-import Agda.TypeChecking.CompiledClause
+import Agda.TypeChecking.CompiledClause hiding (arity)
 import Agda.TypeChecking.Positivity.Occurrence as Occ
 
 import Agda.TypeChecking.Substitute.Class
@@ -1248,3 +1248,83 @@ unLevelAtom (MetaLevel x es)   = MetaV x es
 unLevelAtom (NeutralLevel _ v) = v
 unLevelAtom (UnreducedLevel v) = v
 unLevelAtom (BlockedLevel _ v) = v
+
+-- | Removing a topmost 'DontCare' constructor.
+stripDontCare :: Term -> Term
+stripDontCare v = case ignoreSharing v of
+  DontCare v -> v
+  _          -> v
+
+-- | Doesn't do any reduction.
+arity :: Type -> Nat
+arity t = case ignoreSharing $ unEl t of
+  Pi  _ b -> 1 + arity (unAbs b)
+  _       -> 0
+
+---------------------------------------------------------------------------
+-- * Eliminations.
+---------------------------------------------------------------------------
+
+-- | Convert top-level postfix projections into prefix projections.
+unSpine :: Term -> Term
+unSpine = unSpine' $ const True
+
+-- | Convert 'Proj' projection eliminations
+--   according to their 'ProjOrigin' into
+--   'Def' projection applications.
+unSpine' :: (ProjOrigin -> Bool) -> Term -> Term
+unSpine' p v =
+  case hasElims v of
+    Just (h, es) -> loop h [] es
+    Nothing      -> v
+  where
+    loop :: (Elims -> Term) -> Elims -> Elims -> Term
+    loop h res es =
+      case es of
+        []                   -> v
+        Proj o f : es' | p o -> loop (Def f) [Apply (defaultArg v)] es'
+        e        : es'       -> loop h (e : res) es'
+      where v = h $ reverse res
+
+{- PROBABLY USELESS
+getElims :: Term -> (Elims -> Term, Elims)
+getElims v = maybe default id $ hasElims v
+  where
+    default = (\ [] -> v, [])
+-}
+
+-- | A view distinguishing the neutrals @Var@, @Def@, and @MetaV@ which
+--   can be projected.
+hasElims :: Term -> Maybe (Elims -> Term, Elims)
+hasElims v =
+  case ignoreSharing v of
+    Var   i es -> Just (Var   i, es)
+    Def   f es -> Just (Def   f, es)
+    MetaV x es -> Just (MetaV x, es)
+    Con{}      -> Nothing
+    Lit{}      -> Nothing
+    -- Andreas, 2016-04-13, Issue 1932: We convert λ x → x .f  into f
+    Lam _ (Abs _ v)  -> case ignoreSharing v of
+      Var 0 [Proj _o f] -> Just (Def f, [])
+      _ -> Nothing
+    Lam{}      -> Nothing
+    Pi{}       -> Nothing
+    Sort{}     -> Nothing
+    Level{}    -> Nothing
+    DontCare{} -> Nothing
+    Shared{}   -> __IMPOSSIBLE__
+
+-- Misc -------------------------------------------------------------------
+
+isSort :: Term -> Maybe Sort
+isSort v = case ignoreSharing v of
+  Sort s -> Just s
+  _      -> Nothing
+
+-- | Add 'DontCare' if it is not already a @DontCare@.
+dontCare :: Term -> Term
+dontCare v =
+  case ignoreSharing v of
+    DontCare{} -> v
+    _          -> DontCare v
+
