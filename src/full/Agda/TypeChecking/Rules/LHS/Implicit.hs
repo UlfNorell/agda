@@ -37,14 +37,14 @@ import Agda.Utils.Impossible
 insertImplicitProblem :: Problem -> TCM Problem
 insertImplicitProblem (Problem ps qs tel pr) = do
   reportSDoc "tc.lhs.imp" 15 $
-    sep [ text "insertImplicits"
-        , nest 2 $ text "ps  = " <+> do brackets $ fsep $ punctuate comma $ map prettyA ps
-        , nest 2 $ text "tel = " <+> prettyTCM tel
-        ]
+    vcat [ text "insertImplicits"
+         , nest 2 $ text "ps  =" <+> do brackets $ fsep $ punctuate comma $ map prettyA ps
+         , nest 2 $ text "tel =" <+> prettyTCM tel
+         ]
   ps' <- insertImplicitPatterns ExpandLast ps tel
   reportSDoc "tc.lhs.imp" 15 $
     sep [ text "insertImplicits finished"
-        , nest 2 $ text "ps'  = " <+> do brackets $ fsep $ punctuate comma $ map prettyA ps'
+        , nest 2 $ text "ps'  =" <+> do brackets $ fsep $ punctuate comma $ map prettyA ps'
         ]
   return $ Problem ps' qs tel pr
 
