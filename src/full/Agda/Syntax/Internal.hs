@@ -613,6 +613,9 @@ equalityUnview (OtherType t) = t
 equalityUnview (EqualityType s equality l t lhs rhs) =
   El s $ Def equality $ map Apply (l ++ [t, lhs, rhs])
 
+instance Pretty EqualityView where
+  prettyPrec p = prettyPrec p . equalityUnview
+
 ---------------------------------------------------------------------------
 -- * Absurd Lambda
 ---------------------------------------------------------------------------
