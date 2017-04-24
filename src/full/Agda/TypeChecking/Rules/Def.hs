@@ -630,7 +630,7 @@ checkWithRHS x aux t (LHSResult npars delta ps trhs _ _asb) vs0 as cs = Bench.bi
           splitTelForWith delta (unArg trhs) as vs
         let finalPerm = composeP perm' perm
 
-        reportSLn "tc.with.top" 75 $ "delta  = " ++ show delta
+        reportSLn "tc.with.top" 75 $ "delta  = " ++ P.prettyShow delta
 
         -- Andreas, 2012-09-17: for printing delta,
         -- we should remove it from the context first
