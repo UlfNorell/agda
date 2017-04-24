@@ -143,8 +143,8 @@ withExprClauses cl t args = {- addContext (clauseTel cl) $ -} loop t args where
             } :) <$> rest
     where
       rest = loop (piApply t [a]) as
-      dom  = case unEl t of   -- The type is the generated with-function type so we know it
-        Pi a _  -> unDom a    -- doesn't contain anything funny
+      dom  = case ignoreSharing $ unEl t of -- The type is the generated with-function type so we know it
+        Pi a _  -> unDom a                  -- doesn't contain anything funny
         _       -> __IMPOSSIBLE__
 
 -- | @inlinedClauses f cl t wf@ inlines the clauses of with-function @wf@
