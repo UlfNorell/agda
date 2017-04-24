@@ -486,8 +486,9 @@ piApply = go IdS
     -- Δ ⊢ t type, t == Θ → B
     -- Γ ⊢ args : Θρ
     -- Γ ⊢ ρ : Δ
-    -- Γ ⊢ go ρ t args type
-    go rho t [] = underEl (mkLet rho) t
+    -- Γ ⊢ go ρ t args == B'[args/Θ] where tρ = Θρ → B'
+    go rho (El s t) [] =
+      El (applySubst rho s) (mkLet rho t)  -- substitute eagerly into sort
     go rho t (a : args) =
       case ignoreSharing $ unEl t of
         Pi _ (NoAbs _ b) -> go rho b args
@@ -500,6 +501,7 @@ piApply = go IdS
 
 -- | Introduce a let. Eagerly fuses substitutions (TODO: is this a good idea?)
 mkLet :: Substitution -> Term -> Term
+mkLet IdS v           = v
 mkLet rho (Let sgm v) = Let (rho `composeS` sgm) v
 mkLet rho v           = Let rho v
 
