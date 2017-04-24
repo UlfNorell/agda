@@ -140,11 +140,15 @@ composeS rho IdS = rho
 composeS IdS sgm = sgm
 composeS rho EmptyS = EmptyS
 composeS rho (Wk n sgm) = composeS (dropS n rho) sgm
-composeS rho (u :# sgm) = applySubst rho u :# composeS rho sgm
+composeS (Wk n rho) sgm = wkS n (composeS rho sgm)
+composeS rho (u :# sgm) =
+  case deBruijnView u of
+    Just i  -> lookupConsS rho i $ composeS rho sgm
+    Nothing -> applySubst rho u :# composeS rho sgm
 composeS rho (Strengthen err sgm) = Strengthen err (composeS rho sgm)
 composeS rho (Lift 0 sgm) = __IMPOSSIBLE__
 composeS (u :# rho) (Lift n sgm) = u :# composeS rho (liftS (n - 1) sgm)
-composeS rho (Lift n sgm) = lookupS rho 0 :# composeS rho (wkS 1 (liftS (n - 1) sgm))
+composeS rho (Lift n sgm) = lookupConsS rho 0 $ composeS rho (wkS 1 (liftS (n - 1) sgm))
 
 -- If Γ ⊢ ρ : Δ, Θ then splitS |Θ| ρ = (σ, δ), with
 --   Γ ⊢ σ : Δ
@@ -198,6 +202,37 @@ lookupS rho i = case rho of
   Lift n rho | i < n     -> deBruijnVar i
              | otherwise -> raise n $ lookupS rho (i - n)
   EmptyS                 -> __IMPOSSIBLE__
+
+lookupS' :: Subst a a => Empty -> Substitution' a -> Nat -> a
+lookupS' err rho i =
+  case lookupConsS rho i IdS of
+    u :# _       -> u
+    Strengthen{} -> absurd err
+    _            -> __IMPOSSIBLE__
+
+-- | @lookupConsS ρ i σ = lookupS ρ i :# σ@, if @i ∈ support(ρ)@ and
+--   @Strengthen σ@ otherwise.
+lookupConsS :: Subst a a => Substitution' a -> Nat -> Substitution' a -> Substitution' a
+lookupConsS rho i sgm = case rho of
+  IdS                    -> deBruijnVar i :# sgm
+  Wk n IdS               -> let j = i + n in
+                            if  j < 0 then Strengthen __IMPOSSIBLE__ sgm
+                                      else deBruijnVar j :# sgm
+  Wk n rho               -> raiseTop n $ lookupConsS rho i sgm
+  u :# rho   | i == 0    -> u :# sgm
+             | i < 0     -> Strengthen __IMPOSSIBLE__ sgm
+             | otherwise -> lookupConsS rho (i - 1) sgm
+  Strengthen err rho
+             | i == 0    -> Strengthen __IMPOSSIBLE__ sgm
+             | i < 0     -> Strengthen __IMPOSSIBLE__ sgm
+             | otherwise -> lookupConsS rho (i - 1) sgm
+  Lift n rho | i < n     -> deBruijnVar i :# sgm
+             | otherwise -> raiseTop n $ lookupConsS rho (i - n) sgm
+  EmptyS                 -> Strengthen __IMPOSSIBLE__ sgm
+  where
+    raiseTop n sgm@Strengthen{} = sgm
+    raiseTop n (u :# sgm)       = raise n u :# sgm
+    raiseTop _ _                = __IMPOSSIBLE__
 
 ---------------------------------------------------------------------------
 -- * Functions on abstractions
