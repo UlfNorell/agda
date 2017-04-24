@@ -499,6 +499,11 @@ piApply = go IdS
         _ ->
           trace ("piApply t = " ++ show t ++ "\n  args = " ++ show (a : args)) __IMPOSSIBLE__
 
+-- | Introduce a let when instantiating an abstraction.
+letApply :: Abs Term -> Term -> Term
+letApply (NoAbs _ v) _ = v
+letApply (Abs _ v) u = mkLet (u :# IdS) v
+
 -- | Introduce a let. Eagerly fuses substitutions (TODO: is this a good idea?)
 mkLet :: Substitution -> Term -> Term
 mkLet IdS v           = v
