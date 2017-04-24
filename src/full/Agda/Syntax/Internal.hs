@@ -604,6 +604,15 @@ isEqualityType :: EqualityView -> Bool
 isEqualityType EqualityType{} = True
 isEqualityType OtherType{}    = False
 
+-- | Revert the 'EqualityView'.
+--
+--   Postcondition: type is reduced.
+
+equalityUnview :: EqualityView -> Type
+equalityUnview (OtherType t) = t
+equalityUnview (EqualityType s equality l t lhs rhs) =
+  El s $ Def equality $ map Apply (l ++ [t, lhs, rhs])
+
 ---------------------------------------------------------------------------
 -- * Absurd Lambda
 ---------------------------------------------------------------------------

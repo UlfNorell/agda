@@ -553,11 +553,3 @@ equalityView t0@(El s t) = do
       return $ EqualityType s equality pars typ lhs rhs
     _ -> return $ OtherType t0
 
--- | Revert the 'EqualityView'.
---
---   Postcondition: type is reduced.
-
-equalityUnview :: EqualityView -> Type
-equalityUnview (OtherType t) = t
-equalityUnview (EqualityType s equality l t lhs rhs) =
-  El s $ Def equality $ map Apply (l ++ [t, lhs, rhs])
