@@ -104,7 +104,7 @@ addForcingAnnotations t =
       indexToLevel x = n - x - 1
   -- Note: data parameters will be negative levels.
   let xs = filter (>=0) $ map indexToLevel $ forcedVariables vs
-  let s0 = raise (0 - size tel) s
+  let s0 = applySubst (strengthenS __IMPOSSIBLE__ $ size tel) s
   t' <- force s0 xs t
   reportSLn "tc.force" 60 $ unlines
     [ "Forcing analysis"

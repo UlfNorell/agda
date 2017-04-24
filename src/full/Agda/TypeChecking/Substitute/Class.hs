@@ -90,6 +90,7 @@ idS :: Substitution' a
 idS = IdS
 
 wkS :: Int -> Substitution' a -> Substitution' a
+wkS n _ | n < 0  = __IMPOSSIBLE__
 wkS 0 rho        = rho
 wkS n (Wk m rho) = Wk (n + m) rho
 wkS n EmptyS     = EmptyS
@@ -262,7 +263,7 @@ absBody (NoAbs _ v) = raise 1 v
 
 mkAbs :: (Subst t a, Free a) => ArgName -> a -> Abs a
 mkAbs x v | 0 `freeIn` v = Abs x v
-          | otherwise    = NoAbs x (raise (-1) v)
+          | otherwise    = NoAbs x $ applySubst (strengthenS __IMPOSSIBLE__ 1) v
 
 reAbs :: (Subst t a, Free a) => Abs a -> Abs a
 reAbs (NoAbs x v) = NoAbs x v

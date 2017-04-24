@@ -604,7 +604,7 @@ completeStrategyAt k s = msum $ map (\strat -> strat k s) $
 isHom :: (Free' a All, Subst Term a) => Int -> a -> Maybe a
 isHom n x = do
   guard $ getAll $ runFree (\ (i,_) -> All (i >= n)) IgnoreNot x
-  return $ raise (-n) x
+  return $ applySubst (strengthenS __IMPOSSIBLE__ n) x
 
 -- | Checks whether the given term (of the given type) is beta-eta-equivalent
 --   to a variable. Returns just the de Bruijn-index of the variable if it is,
