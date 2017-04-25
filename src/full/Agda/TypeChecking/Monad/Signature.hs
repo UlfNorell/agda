@@ -364,7 +364,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
         copyDef' np d = do
           reportSLn "tc.mod.apply" 60 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args " ++ show (defAbstract d)
           reportSLn "tc.mod.apply" 80 $
-            "args = " ++ show ts' ++ "\n" ++
+            "args = " ++ show (map pretty ts') ++ "\n" ++
             "old type = " ++ prettyShow (defType d)
           reportSLn "tc.mod.apply" 80 $
             "new type = " ++ prettyShow t

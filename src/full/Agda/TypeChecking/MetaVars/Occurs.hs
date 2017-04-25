@@ -250,7 +250,7 @@ instance Occurs Term where
         reportSDoc "tc.meta.occurs" 45 $
           text ("occursCheck " ++ prettyShow m ++ " (" ++ show ctx ++ ") of ") <+> prettyTCM v
         reportSDoc "tc.meta.occurs" 70 $
-          nest 2 $ text $ show v
+          nest 2 $ pretty v
         case v of
           Var i es   -> do
             if (i `allowedVar` xs) then Var i <$> occ (weakly ctx) es else do
