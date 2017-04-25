@@ -61,6 +61,8 @@ class Abstract t where
 
 class DeBruijn t => Subst t a | a -> t where
   applySubst :: Substitution' t -> a -> a
+  mkLet :: Substitution' t -> a -> a
+  mkLet = applySubst
 
 raise :: Subst t a => Nat -> a -> a
 raise = raiseFrom 0

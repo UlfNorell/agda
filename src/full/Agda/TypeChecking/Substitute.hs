@@ -504,12 +504,6 @@ letApply :: Abs Term -> Term -> Term
 letApply (NoAbs _ v) _ = v
 letApply (Abs _ v) u = mkLet (u :# IdS) v
 
--- | Introduce a let. Eagerly fuses substitutions (TODO: is this a good idea?)
-mkLet :: Substitution -> Term -> Term
-mkLet IdS v           = v
-mkLet rho (Let sgm v) = Let (rho `composeS` sgm) v
-mkLet rho v           = Let rho v
-
 ---------------------------------------------------------------------------
 -- * Abstraction
 ---------------------------------------------------------------------------
@@ -705,6 +699,12 @@ instance Subst Term Term where
     Shared p    -> Shared $ applySubst rho p
     Let sgm v   -> Let (applySubst rho sgm) v
     DontCare mv -> dontCare $ applySubst rho mv
+
+  -- Eagerly fuses substitutions (TODO: is this a good idea?)
+  mkLet IdS v           = v
+  -- mkLet rho (Let sgm v) = Let (rho `composeS` sgm) v
+  mkLet rho v           = Let rho v
+
 
 -- | Exported by boot file.
 applySubstTm :: Substitution -> Term -> Term
