@@ -674,6 +674,7 @@ assign dir x args v = do
       v <- liftTCM $ occursCheck x (relVL, irrVL) v
 
       reportSLn "tc.meta.assign" 15 "passed occursCheck"
+      reportSDoc "tc.meta.assign" 30 $ text "  result:" <+> pretty v
       verboseS "tc.meta.assign" 30 $ do
         let n = termSize v
         when (n > 200) $ reportSDoc "tc.meta.assign" 30 $
