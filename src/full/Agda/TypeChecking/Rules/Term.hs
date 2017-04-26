@@ -1586,11 +1586,13 @@ inferDef mkTerm x =
     -- apply it to the current context
     vs <- freeVarsToApply x
     reportSDoc "tc.term.def" 10 $ do
-      text "inferred def " <+> prettyTCM x <+> hsep (map prettyTCM vs)
+      text "inferred def" <+> prettyTCM x <+> hsep (map prettyTCM vs)
     let t = defType d
-    reportSDoc "tc.term.def" 10 $ nest 2 $ text " : " <+> prettyTCM t
+    reportSDoc "tc.term.def" 10 $ nest 2 $ text "type:     " <+> prettyTCM t
+    reportSDoc "tc.term.def" 50 $ nest 2 $ text "type(raw):" <+> pretty t
     let v = mkTerm vs -- applies x to vs, dropping parameters
-    reportSDoc "tc.term.def" 10 $ nest 2 $ text " --> " <+> prettyTCM v
+    reportSDoc "tc.term.def" 10 $ nest 2 $ text "term:     " <+> prettyTCM v
+    reportSDoc "tc.term.def" 50 $ nest 2 $ text "term(raw):" <+> pretty v
     return (v, t)
 
 -- | Check the type of a constructor application. This is easier than
@@ -1940,6 +1942,9 @@ checkArguments DontExpandLast _ [] t0 t1 = return ([], t0)
 -- Case: no arguments, but need to insert trailing hiddens.
 checkArguments exh r [] t0 t1 =
     traceCallE (CheckArguments r [] t0 t1) $ lift $ do
+      reportSDoc "tc.term.args" 40 $ hang (text "checkArguments []") 2 $
+        vcat [ text "t0 =" <+> pretty t0
+             , text "t1 =" <+> pretty t1 ]
       t1' <- unEl <$> reduce t1
       implicitArgs (-1) (expand t1') t0
     where
@@ -2000,6 +2005,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
               | otherwise = lift $ typeError $ WrongNamedArgument arg
 
         -- t0' <- lift $ forcePi (getHiding info) (maybe "_" rangedThing $ nameOf e) t0'
+        reportSDoc "tc.term.args" 40 $ nest 2 $ hang (text "type after implicits:") 2 (pretty t0')
         case ignoreSharing $ unEl t0' of
           Pi (Dom info' a) b
             | getHiding info == getHiding info'

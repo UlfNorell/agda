@@ -166,7 +166,7 @@ compareTerm cmp a u v = do
       -- Andreas, 2013-10-19 can only solve if no projections
       reportSDoc "tc.conv.term.shortcut" 20 $ sep
         [ text "attempting shortcut"
-        , nest 2 $ prettyTCM (MetaV x es) <+> text ":=" <+> prettyTCM v
+        , nest 2 $ pretty (MetaV x es) <+> text ":=" <+> pretty v
         ]
       ifM (isInstantiatedMeta x) patternViolation {-else-} $ do
         assignE dir x es v $ compareTermDir dir a
