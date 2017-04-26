@@ -108,6 +108,11 @@ instance Instantiate Term where
   instantiate' (Sort s) = sortTm <$> instantiate' s
   instantiate' v@Shared{} =
     updateSharedTerm instantiate' v
+  instantiate' (Let rho v) = do
+    v <- instantiate' v
+    case v of
+      Var{} -> instantiate' (applySubst rho v)  -- The var might get substituted with a meta
+      _     -> return $ Let rho v
   instantiate' t = return t
 
 instance Instantiate Level where
