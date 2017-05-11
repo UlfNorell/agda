@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- | Computing the free variables of a term lazily.
@@ -33,6 +34,7 @@ import Control.Monad.Reader
 
 import Data.Foldable (foldMap)
 import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, mconcat)
 import Data.Set (Set)
 
@@ -42,10 +44,14 @@ import {-# SOURCE #-} Agda.TypeChecking.Substitute
 
 -- import Agda.TypeChecking.Irrelevance
 
+import Agda.Utils.Empty
 import Agda.Utils.Functor
 import Agda.Utils.Monad
 import Agda.Utils.Singleton
 import Agda.Utils.Size
+
+import Agda.Utils.Impossible
+#include "undefined.h"
 
 type MetaSet = Set MetaId
 
@@ -174,12 +180,12 @@ initFreeEnv sing = FreeEnv
     sing' i | i < 0 = mempty
     sing' i         = sing i
 
-type FreeM c = Reader (FreeEnv c) c
+type FreeM c = Reader (FreeEnv c)
 
-instance Semigroup c => Semigroup (FreeM c) where
+instance Semigroup a => Semigroup (FreeM c a) where
   (<>) = liftA2 (<>)
 
-instance (Semigroup c, Monoid c) => Monoid (FreeM c) where
+instance (Semigroup a, Monoid a) => Monoid (FreeM c a) where
   mempty  = pure mempty
   mappend = (<>)
   mconcat = mconcat <.> sequence
@@ -188,7 +194,7 @@ instance (Semigroup c, Monoid c) => Monoid (FreeM c) where
 --   singleton = pure . singleton
 
 -- | Base case: a variable.
-variable :: IsVarSet c => Int -> FreeM c
+variable :: IsVarSet c => Int -> FreeM c c
 variable n = do
   o <- asks feFlexRig
   r <- asks feRelevance
@@ -196,22 +202,22 @@ variable n = do
   pure $ withVarOcc (VarOcc o r) (s n)
 
 -- | Going under a binder.
-bind :: FreeM a -> FreeM a
+bind :: FreeM c a -> FreeM c a
 bind = bind' 1
 
-bind' :: Nat -> FreeM a -> FreeM a
+bind' :: Nat -> FreeM c a -> FreeM c a
 bind' n = local $ \ e -> e { feSingleton = \ i -> feSingleton e (i - n) }
 
 -- | Changing the 'FlexRig' context.
-go :: FlexRig -> FreeM a -> FreeM a
+go :: FlexRig -> FreeM c a -> FreeM c a
 go o = local $ \ e -> e { feFlexRig = composeFlexRig o $ feFlexRig e }
 
 -- | Changing the 'Relevance'.
-goRel :: Relevance-> FreeM a -> FreeM a
+goRel :: Relevance-> FreeM c a -> FreeM c a
 goRel r = local $ \ e -> e { feRelevance = composeRelevance r $ feRelevance e }
 
 -- | What happens to the variables occurring under a constructor?
-underConstructor :: ConHead -> FreeM a -> FreeM a
+underConstructor :: ConHead -> FreeM c a -> FreeM c a
 underConstructor (ConHead c i fs) =
   case (i,fs) of
     -- Coinductive (record) constructors admit infinite cycles:
@@ -228,7 +234,7 @@ class Free a where
   -- Misplaced SPECIALIZE pragma:
   -- {-# SPECIALIZE freeVars' :: a -> FreeM Any #-}
   -- So you cannot specialize all instances in one go. :(
-  freeVars' :: IsVarSet c => a -> FreeM c
+  freeVars' :: IsVarSet c => a -> FreeM c c
 
 instance Free Term where
   -- SPECIALIZE instance does not work as well, see
@@ -257,7 +263,7 @@ instance Free Term where
     Level l      -> freeVars' l
     MetaV m ts   -> go (Flexible $ singleton m) $ freeVars' ts
     DontCare mt  -> goRel Irrelevant $ freeVars' mt
-    Let rho v    -> freeVars' (applySubstTm rho v)  -- TODO: be smarter!
+    Let rho v    -> freeLet rho v
     Shared p     -> freeVars' (derefPtr p)
 
 instance Free a => Free (Type' a) where
@@ -323,3 +329,39 @@ instance Free Clause where
 instance Free EqualityView where
   freeVars' (OtherType t) = freeVars' t
   freeVars' (EqualityType s _eq l t a b) = freeVars' s `mappend` freeVars' (l ++ [t, a, b])
+
+-- Dealing with explicit substitutions ------------------------------------
+
+freeLet :: IsVarSet c => Substitution -> Term -> FreeM c c
+-- freeLet rho v = freeVars' (applySubstTm rho v)
+freeLet rho v = do
+  fvrho <- freeSubst rho
+  local (\ env -> env { feSingleton = lookupFree fvrho $ feSingleton env })
+      $ freeVars' v
+
+freeSubst :: forall c a. (IsVarSet c, Free a) => Substitution' a -> FreeM c (Substitution' c)
+freeSubst rho =
+  case rho of
+    IdS                -> pure IdS
+    EmptyS             -> pure EmptyS
+    u :# rho           -> (:#) <$> freeVars' u <*> freeSubst rho
+    Strengthen err rho -> Strengthen err <$> freeSubst rho
+    Wk n rho           -> Wk   n <$> bind' (-n) (freeSubst rho)
+    Lift n rho         -> Lift n <$> bind' (-n) (freeSubst rho)
+
+lookupFree :: IsVarSet c => Substitution' c -> SingleVar c -> SingleVar c
+lookupFree rho single i =
+  case rho of
+    IdS                -> single i
+    EmptyS             -> __IMPOSSIBLE__
+    u :# rho
+      | i == 0         -> u
+      | otherwise      -> lookupFree rho single (i - 1)
+    Strengthen err rho
+      | i == 0         -> absurd err
+      | otherwise      -> lookupFree rho single (i - 1)
+    Wk n rho           -> lookupFree rho (single . (+ n)) i
+    Lift n rho
+      | i < n          -> single i
+      | otherwise      -> lookupFree rho (single . (+ n)) (i - n)
+
