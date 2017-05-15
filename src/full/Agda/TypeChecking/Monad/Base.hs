@@ -26,6 +26,7 @@ import qualified Data.Map as Map -- hiding (singleton, null, empty)
 import Data.Set (Set)
 import qualified Data.Set as Set -- hiding (singleton, null, empty)
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, Any(..))
+import Data.Data (Data, toConstr)
 import Data.Typeable (Typeable)
 import Data.Foldable (Foldable)
 import Data.Traversable
@@ -103,6 +104,9 @@ data TCState = TCSt
   , stPersistentState :: !PersistentTCState
     -- ^ State which is forever, like a diamond.
   }
+#if __GLASGOW_HASKELL__ <= 708
+  deriving Typeable
+#endif
 
 class Monad m => ReadTCState m where
   getTCState :: m TCState
@@ -552,7 +556,7 @@ instance HasFresh Int where
   freshLens = stFreshInt
 
 newtype ProblemId = ProblemId Nat
-  deriving (Typeable, Eq, Ord, Enum, Real, Integral, Num)
+  deriving (Typeable, Data, Eq, Ord, Enum, Real, Integral, Num)
 
 -- TODO: 'Show' should output Haskell-parseable representations.
 -- The following instance is deprecated, and Pretty[TCM] should be used
@@ -682,12 +686,13 @@ data Interface = Interface
   , iPragmaOptions   :: [OptionsPragma]
                         -- ^ Pragma options set in the file.
   , iPatternSyns     :: A.PatternSynDefns
+  , iWarnings        :: [TCWarning]
   }
   deriving (Typeable, Show)
 
 instance Pretty Interface where
   pretty (Interface sourceH importedM moduleN scope insideS signature display builtin
-                    foreignCode highlighting pragmaO patternS) =
+                    foreignCode highlighting pragmaO patternS warnings) =
     hang (text "Interface") 2 $ vcat
       [ text "source hash:"         <+> (pretty . show) sourceH
       , text "imported modules:"    <+> (pretty . show) importedM
@@ -701,6 +706,7 @@ instance Pretty Interface where
       , text "highlighting:"        <+> (pretty . show) highlighting
       , text "pragma options:"      <+> (pretty . show) pragmaO
       , text "pattern syns:"        <+> (pretty . show) patternS
+      , text "warnings:"            <+> (pretty . show) warnings
       ]
 
 -- | Combines the source hash and the (full) hashes of the imported modules.
@@ -722,7 +728,7 @@ data Closure a = Closure
       --   a substitution @Γ ⊢ ρ_M : Γ_M@ from the current context @Γ = envContext (clEnv)@.
   , clValue            :: a
   }
-    deriving (Typeable, Functor, Foldable)
+    deriving (Typeable, Data, Functor, Foldable)
 
 instance Show a => Show (Closure a) where
   show cl = "Closure " ++ show (clValue cl)
@@ -748,7 +754,7 @@ data ProblemConstraint = PConstr
   { constraintProblems :: Set ProblemId
   , theConstraint      :: Closure Constraint
   }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 instance HasRange ProblemConstraint where
   getRange = getRange . theConstraint
@@ -773,7 +779,7 @@ data Constraint
     --   on which the constraint may be blocked on and the third one is the list
     --   of candidates (or Nothing if we haven’t determined the list of
     --   candidates yet)
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 instance HasRange Constraint where
   getRange (IsEmpty r t) = r
@@ -823,7 +829,7 @@ instance TermLike Constraint where
 
 
 data Comparison = CmpEq | CmpLeq
-  deriving (Eq, Typeable)
+  deriving (Eq, Typeable, Data)
 
 -- TODO: 'Show' should output Haskell-parseable representations.
 -- The following instance is deprecated, and Pretty[TCM] should be used
@@ -873,7 +879,7 @@ dirToCmp cont DirGeq = flip $ cont CmpLeq
 
 -- | A thing tagged with the context it came from.
 data Open a = OpenThing { openThingCtxIds :: [CtxId], openThing :: a }
-    deriving (Typeable, Show, Functor)
+    deriving (Typeable, Data, Show, Functor)
 
 instance Decoration Open where
   traverseF f (OpenThing cxt x) = OpenThing cxt <$> f x
@@ -881,7 +887,7 @@ instance Decoration Open where
 data Local a = Local ModuleName a   -- ^ Local to a given module, the value
                                     -- should have module parameters as free variables.
              | Global a             -- ^ Global value, should be closed.
-    deriving (Typeable, Show, Functor, Foldable, Traversable)
+    deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 isGlobal :: Local a -> Bool
 isGlobal Global{} = True
@@ -984,12 +990,24 @@ instance Show MetaInstantiation where
 --
 --   Higher value means higher priority to be instantiated.
 newtype MetaPriority = MetaPriority Int
-    deriving (Eq, Ord, Show)
+    deriving ( Eq
+             , Ord
+             , Show
+#if __GLASGOW_HASKELL__ <= 708
+             , Typeable
+#endif
+             )
 
 data RunMetaOccursCheck
   = RunMetaOccursCheck
   | DontRunMetaOccursCheck
-  deriving (Eq, Ord, Show)
+  deriving (Eq
+           , Ord
+           , Show
+#if __GLASGOW_HASKELL__ <= 708
+           , Typeable
+#endif
+           )
 
 -- | @MetaInfo@ is cloned from one meta to the next during pruning.
 data MetaInfo = MetaInfo
@@ -1000,6 +1018,9 @@ data MetaInfo = MetaInfo
     -- ^ Used for printing.
     --   @Just x@ if meta-variable comes from omitted argument with name @x@.
   }
+#if __GLASGOW_HASKELL__ <= 708
+  deriving Typeable
+#endif
 
 -- | Name suggestion for meta variable.  Empty string means no suggestion.
 type MetaNameSuggestion = String
@@ -1068,6 +1089,9 @@ data InteractionPoint = InteractionPoint
       -- ^ The clause of the interaction point (if any).
       --   Used for case splitting.
   }
+#if __GLASGOW_HASKELL__ <= 708
+  deriving Typeable
+#endif
 
 instance Eq InteractionPoint where (==) = (==) `on` ipMeta
 
@@ -1084,6 +1108,7 @@ data IPClause = IPClause
   , ipcClause   :: A.RHS  -- ^ The original AST clause rhs.
   }
   | IPNoClause -- ^ The interaction point is not in the rhs of a clause.
+  deriving (Typeable, Data)
 
 instance Eq IPClause where
   IPNoClause     == IPNoClause       = True
@@ -1099,7 +1124,7 @@ data Signature = Sig
       , _sigDefinitions :: Definitions
       , _sigRewriteRules:: RewriteRuleMap  -- ^ The rewrite rules defined in this file.
       }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 sigSections :: Lens' Sections Signature
 sigSections f s =
@@ -1122,7 +1147,7 @@ type RewriteRuleMap = HashMap QName RewriteRules
 type DisplayForms = HashMap QName [LocalDisplayForm]
 
 data Section = Section { _secTelescope :: Telescope }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 secTelescope :: Lens' Telescope Section
 secTelescope f s =
@@ -1156,7 +1181,7 @@ data DisplayForm = Display
   , dfRHS      :: DisplayTerm
     -- ^ Right hand side, with @n@ free variables.
   }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 type LocalDisplayForm = Local DisplayForm
 
@@ -1178,7 +1203,7 @@ data DisplayTerm
     -- ^ @.v@.
   | DTerm Term
     -- ^ @v@.
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 instance Free DisplayForm where
   freeVars' (Display n ps t) = bind (freeVars' ps) `mappend` bind' n (freeVars' t)
@@ -1214,13 +1239,13 @@ data NLPat
     -- ^ Matches @x es@ where x is a lambda-bound variable
   | PTerm Term
     -- ^ Matches the term modulo β (ideally βη).
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 type PElims = [Elim' NLPat]
 
 data NLPType = NLPType
   { nlpTypeLevel :: NLPat  -- always PWild or PVar (with all bound variables in scope)
   , nlpTypeUnEl  :: NLPat
-  } deriving (Typeable, Show)
+  } deriving (Typeable, Data, Show)
 
 type RewriteRules = [RewriteRule]
 
@@ -1234,7 +1259,7 @@ data RewriteRule = RewriteRule
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
-    deriving (Typeable, Show)
+    deriving (Typeable, Data, Show)
 
 data Definition = Defn
   { defArgInfo        :: ArgInfo -- ^ Hiding should not be used.
@@ -1300,7 +1325,7 @@ data Definition = Defn
     -- ^ Should the def be treated as injective by the pattern matching unifier?
   , theDef            :: Defn
   }
-    deriving (Typeable, Show)
+    deriving (Typeable, Data, Show)
 
 theDefLens :: Lens' Defn Definition
 theDefLens f d = f (theDef d) <&> \ df -> d { theDef = df }
@@ -1329,11 +1354,11 @@ data Polarity
   | Contravariant  -- ^ antitone
   | Invariant      -- ^ no information (mixed variance)
   | Nonvariant     -- ^ constant
-  deriving (Typeable, Show, Eq)
+  deriving (Typeable, Data, Show, Eq)
 
 -- | The backends are responsible for parsing their own pragmas.
 data CompilerPragma = CompilerPragma Range String
-  deriving (Typeable, Show, Eq)
+  deriving (Typeable, Data, Show, Eq)
 
 instance HasRange CompilerPragma where
   getRange (CompilerPragma r _) = r
@@ -1356,7 +1381,7 @@ noCompiledRep = Map.empty
 data ExtLamInfo = ExtLamInfo
   { extLamNumHidden :: Int  -- Number of hidden args to be dropped when printing.
   , extLamNumNonHid :: Int  -- Number of visible args to be dropped when printing.
-  } deriving (Typeable, Eq, Ord, Show)
+  } deriving (Typeable, Data, Eq, Ord, Show)
 
 -- | Additional information for projection 'Function's.
 data Projection = Projection
@@ -1385,11 +1410,11 @@ data Projection = Projection
     --   (Invariant: the number of abstractions equals 'projIndex'.)
     --   In case of a projection-like function, just the function symbol
     --   is returned as 'Def':  @t = \ pars -> f@.
-  } deriving (Typeable, Show)
+  } deriving (Typeable, Data, Show)
 
 -- | Abstractions to build projection function (dropping parameters).
 newtype ProjLams = ProjLams { getProjLams :: [Arg ArgName] }
-  deriving (Typeable, Show, Null)
+  deriving (Typeable, Data, Show, Null)
 
 -- | Building the projection function (which drops the parameters).
 projDropPars :: Projection -> ProjOrigin -> Term
@@ -1414,7 +1439,7 @@ projArgInfo (Projection _ _ _ _ lams) =
 data EtaEquality
   = Specified !Bool  -- ^ User specifed 'eta-equality' or 'no-eta-equality'.
   | Inferred !Bool   -- ^ Positivity checker inferred whether eta is safe.
-  deriving (Typeable, Show, Eq)
+  deriving (Typeable, Data, Show, Eq)
 
 etaEqualityToBool :: EtaEquality -> Bool
 etaEqualityToBool (Specified b) = b
@@ -1429,7 +1454,7 @@ data FunctionFlag
   = FunStatic  -- ^ Should calls to this function be normalised at compile-time?
   | FunInline  -- ^ Should calls to this function be inlined by the compiler?
   | FunMacro   -- ^ Is this function a macro?
-  deriving (Typeable, Eq, Ord, Enum, Show)
+  deriving (Typeable, Data, Eq, Ord, Enum, Show)
 
 data Defn = Axiom
             -- ^ Postulate.
@@ -1537,7 +1562,7 @@ data Defn = Axiom
               --   @'Just' something@ for builtin functions.
             }
             -- ^ Primitive or builtin functions.
-    deriving (Typeable, Show)
+    deriving (Typeable, Data, Show)
 
 instance Pretty Definition where
   pretty Defn{..} =
@@ -1693,7 +1718,7 @@ newtype Fields = Fields [(C.Name, Type)]
 --   (unfolding of definitions) does not count as simplifying?
 
 data Simplification = YesSimplification | NoSimplification
-  deriving (Typeable, Eq, Show)
+  deriving (Typeable, Data, Eq, Show)
 
 instance Null Simplification where
   empty = NoSimplification
@@ -1747,7 +1772,7 @@ data AllowedReduction
   | LevelReductions          -- ^ Reduce @'Level'@ terms.
   | UnconfirmedReductions    -- ^ Functions whose termination has not (yet) been confirmed.
   | NonTerminatingReductions -- ^ Functions that have failed termination checking.
-  deriving (Show, Eq, Ord, Enum, Bounded)
+  deriving (Show, Eq, Ord, Enum, Bounded, Typeable, Data)
 
 type AllowedReductions = [AllowedReduction]
 
@@ -1818,19 +1843,19 @@ type FunctionInverse = FunctionInverse' Clause
 data FunctionInverse' c
   = NotInjective
   | Inverse (Map TermHead c)
-  deriving (Typeable, Show, Functor)
+  deriving (Typeable, Data, Show, Functor)
 
 data TermHead = SortHead
               | PiHead
               | ConsHead QName
-  deriving (Typeable, Eq, Ord, Show)
+  deriving (Typeable, Data, Eq, Ord, Show)
 
 ---------------------------------------------------------------------------
 -- ** Mutual blocks
 ---------------------------------------------------------------------------
 
 newtype MutualId = MutId Int32
-  deriving (Typeable, Eq, Ord, Show, Num, Enum)
+  deriving (Typeable, Data, Eq, Ord, Show, Num, Enum)
 
 ---------------------------------------------------------------------------
 -- ** Statistics
@@ -1870,7 +1895,7 @@ data Call = CheckClause Type A.SpineClause
           | NoHighlighting
           | ModuleContents  -- ^ Interaction command: show module contents.
           | SetRange Range  -- ^ used by 'setCurrentRange'
-    deriving (Typeable)
+    deriving (Typeable, Data)
 
 instance Pretty Call where
     pretty CheckClause{}             = text "CheckClause"
@@ -1988,7 +2013,7 @@ data HighlightingLevel
     -- ^ This includes both non-interactive highlighting and
     -- interactive highlighting of the expression that is currently
     -- being type-checked.
-    deriving (Eq, Ord, Show, Read)
+    deriving (Eq, Ord, Show, Read, Typeable, Data)
 
 -- | How should highlighting be sent to the user interface?
 
@@ -1997,7 +2022,7 @@ data HighlightingMethod
     -- ^ Via stdout.
   | Indirect
     -- ^ Both via files and via stdout.
-    deriving (Eq, Show, Read)
+    deriving (Eq, Show, Read, Typeable, Data)
 
 -- | @ifTopLevelAndHighlightingLevelIs l b m@ runs @m@ when we're
 -- type-checking the top-level module and either the highlighting
@@ -2027,7 +2052,7 @@ ifTopLevelAndHighlightingLevelIs l =
 data ModuleParameters = ModuleParams
   { mpSubstitution :: Substitution
       -- ^ @Δ ⊢ σ : Γ@ for a @module M Γ@ where @Δ@ is the current context @envContext@.
-  } deriving (Typeable, Show)
+  } deriving (Typeable, Data, Show)
 
 defaultModuleParameters :: ModuleParameters
 defaultModuleParameters = ModuleParams IdS
@@ -2125,7 +2150,7 @@ data TCEnv =
                 -- ^ Until we get a termination checker for instance search (#1743) we
                 --   limit the search depth to ensure termination.
           }
-    deriving (Typeable)
+    deriving (Typeable, Data)
 
 initEnv :: TCEnv
 initEnv = TCEnv { envContext             = []
@@ -2176,7 +2201,7 @@ disableDestructiveUpdate = local $ \e -> e { envAllowDestructiveUpdate = False }
 
 data UnquoteFlags = UnquoteFlags
   { _unquoteNormalise :: Bool }
-  deriving (Typeable)
+  deriving (Typeable, Data)
 
 defaultUnquoteFlags :: UnquoteFlags
 defaultUnquoteFlags = UnquoteFlags
@@ -2293,10 +2318,10 @@ type Context      = [ContextEntry]
 data ContextEntry = Ctx { ctxId    :: CtxId
                         , ctxEntry :: Dom (Name, Type)
                         }
-  deriving (Typeable)
+  deriving (Typeable, Data)
 
 newtype CtxId     = CtxId Nat
-  deriving (Typeable, Eq, Ord, Show, Enum, Real, Integral, Num)
+  deriving (Typeable, Data, Eq, Ord, Show, Enum, Real, Integral, Num)
 
 ---------------------------------------------------------------------------
 -- ** Let bindings
@@ -2312,7 +2337,7 @@ data AbstractMode
   = AbstractMode        -- ^ Abstract things in the current module can be accessed.
   | ConcreteMode        -- ^ No abstract things can be accessed.
   | IgnoreAbstractMode  -- ^ All abstract things can be accessed.
-  deriving (Typeable, Show, Eq)
+  deriving (Typeable, Data, Show, Eq)
 
 aDefToMode :: IsAbstract -> AbstractMode
 aDefToMode AbstractDef = AbstractMode
@@ -2330,12 +2355,12 @@ aModeToDef _ = __IMPOSSIBLE__
 data ExpandHidden
   = ExpandLast      -- ^ Add implicit arguments in the end until type is no longer hidden 'Pi'.
   | DontExpandLast  -- ^ Do not append implicit arguments.
-  deriving (Eq)
+  deriving (Eq, Typeable, Data)
 
 data ExplicitToInstance
   = ExplicitToInstance    -- ^ Explicit arguments are considered as instance arguments
   | ExplicitStayExplicit
-    deriving (Eq, Show)
+    deriving (Eq, Show, Typeable, Data)
 
 -- | A candidate solution for an instance meta is a term with its type.
 --   It may be the case that the candidate is not fully applied yet or
@@ -2345,7 +2370,7 @@ data Candidate  = Candidate { candidateTerm :: Term
                             , candidateEti  :: ExplicitToInstance
                             , candidateOverlappable :: Bool
                             }
-  deriving (Show)
+  deriving (Show, Typeable, Data)
 
 instance Free Candidate where
   freeVars' (Candidate t u _ _) = freeVars' (t, u)
@@ -2393,24 +2418,43 @@ data Warning =
   | DeprecationWarning String String String
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
-  deriving Show
+  deriving ( Show
+           , Data
+#if __GLASGOW_HASKELL__ <= 708
+           , Typeable
+#endif
+           )
 
 -- we also keep the state so that we can print the warning correctly
 -- later
 data TCWarning
   = TCWarning
-    { tcWarningState   :: TCState
+    { tcWarningOrigin :: SrcFile
+        -- ^ File where the warning was raised
+    , tcWarningState   :: TCState
         -- ^ The state in which the warning was raised.
     , tcWarningClosure :: Closure Warning
         -- ^ The warning and the environment in which it was raised.
     }
-  deriving Show
+  deriving ( Show
+#if __GLASGOW_HASKELL__ <= 708
+           , Typeable
+#endif
+           )
 
 instance HasRange TCWarning where
   getRange = envRange . clEnv . tcWarningClosure
 
 tcWarning :: TCWarning -> Warning
 tcWarning = clValue . tcWarningClosure
+
+-- used for merging lists of warnings
+instance Eq TCWarning where
+  x == y = equalHeadConstructors (tcWarning x) (tcWarning y)
+            && getRange x == getRange y
+
+equalHeadConstructors :: Warning -> Warning -> Bool
+equalHeadConstructors = (==) `on` toConstr
 
 getPartialDefs :: ReadTCState tcm => tcm [QName]
 getPartialDefs = do
@@ -2480,7 +2524,7 @@ data CallInfo = CallInfo
     -- ^ Range of the target function.
   , callInfoCall :: Closure Term
     -- ^ To be formatted representation of the call.
-  } deriving Typeable
+  } deriving (Typeable, Data)
 
 -- no Eq, Ord instances: too expensive! (see issues 851, 852)
 
@@ -2514,7 +2558,7 @@ data TerminationError = TerminationError
     -- automatically generated functions.)
   , termErrCalls :: [CallInfo]
     -- ^ The problematic call sites.
-  } deriving (Typeable, Show)
+  } deriving (Typeable, Data, Show)
 
 -- | Error when splitting a pattern variable into possible constructor patterns.
 data SplitError
@@ -3112,7 +3156,8 @@ genericNonFatalError = warning . GenericNonFatalError
 
 {-# SPECIALIZE warning_ :: Warning -> TCM TCWarning #-}
 warning_ :: MonadTCM tcm => Warning -> tcm TCWarning
-warning_ w = liftTCM $ TCWarning <$> get <*> buildClosure w
+warning_ w =
+  liftTCM $ TCWarning <$> (rangeFile <$> view eRange) <*> get <*> buildClosure w
 
 {-# SPECIALIZE warning :: Warning -> TCM () #-}
 warning :: MonadTCM tcm => Warning -> tcm ()

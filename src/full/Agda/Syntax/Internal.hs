@@ -4,6 +4,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE UndecidableInstances       #-}  -- because of shortcomings of FunctionalDependencies
+
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
 #endif
@@ -33,6 +34,7 @@ import Data.Orphans             ()
 #endif
 
 import Data.Traversable
+import Data.Data (Data)
 import Data.Typeable (Typeable)
 
 import Agda.Syntax.Position
@@ -74,7 +76,7 @@ data ConHead = ConHead
                               --   Empty list for data constructors.
                               --   'Arg' is not needed here since it
                               --   is stored in the constructor args.
-  } deriving (Typeable)
+  } deriving (Typeable, Data)
 
 instance Eq ConHead where
   (==) = (==) `on` conName
@@ -128,7 +130,7 @@ data Term = Var {-# UNPACK #-} !Int Elims -- ^ @x es@ neutral
           | Let Substitution Term
             -- ^ Explicit substitution. Covers the entire context of the body. So, if
             --   @Γ ⊢ v : A@, and @Δ ⊢ ρ : Γ@, then @Δ ⊢ Let ρ v : Aρ@.
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 type ConInfo = ConOrigin
 
@@ -137,7 +139,7 @@ type ConInfo = ConOrigin
 data Elim' a
   = Apply (Arg a)         -- ^ Application.
   | Proj ProjOrigin QName -- ^ Projection.  'QName' is name of a record projection.
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 type Elim = Elim' Term
 type Elims = [Elim]  -- ^ eliminations ordered left-to-right.
@@ -173,7 +175,7 @@ data Abs a = Abs   { absName :: ArgName, unAbs :: a }
                -- ^ The body has (at least) one free variable.
                --   Danger: 'unAbs' doesn't shift variables properly
            | NoAbs { absName :: ArgName, unAbs :: a }
-  deriving (Typeable, Functor, Foldable, Traversable)
+  deriving (Typeable, Data, Functor, Foldable, Traversable)
 
 instance Decoration Abs where
   traverseF f (Abs   x a) = Abs   x <$> f a
@@ -182,7 +184,7 @@ instance Decoration Abs where
 -- | Types are terms with a sort annotation.
 --
 data Type' a = El { _getSort :: Sort, unEl :: a }
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 type Type = Type' Term
 
@@ -209,7 +211,7 @@ instance LensSort a => LensSort (Abs a) where
 --   and so on.
 data Tele a = EmptyTel
             | ExtendTel a (Abs (Tele a))  -- ^ 'Abs' is never 'NoAbs'.
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 type Telescope = Tele (Dom Type)
 
@@ -225,19 +227,19 @@ data Sort
     --   If the free variable occurs in the second sort,
     --   the whole thing should reduce to Inf,
     --   otherwise it's the normal lub.
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 -- | A level is a maximum expression of 0..n 'PlusLevel' expressions
 --   each of which is a number or an atom plus a number.
 --
 --   The empty maximum is the canonical representation for level 0.
 newtype Level = Max [PlusLevel]
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Data)
 
 data PlusLevel
   = ClosedLevel Integer     -- ^ @n@, to represent @Setₙ@.
   | Plus Integer LevelAtom  -- ^ @n + ℓ@.
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Data)
 
 -- | An atomic term of type @Level@.
 data LevelAtom
@@ -249,7 +251,7 @@ data LevelAtom
     -- ^ A neutral term of type @Level@.
   | UnreducedLevel Term
     -- ^ Introduced by 'instantiate', removed by 'reduce'.
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Data)
 
 ---------------------------------------------------------------------------
 -- * Blocked Terms
@@ -274,7 +276,7 @@ data NotBlocked
   | ReallyNotBlocked
     -- ^ Reduction was not blocked, we reached a whnf
     --   which can be anything but a stuck @'Def'@.
-  deriving (Show, Typeable)
+  deriving (Show, Typeable, Data)
 
 -- | 'ReallyNotBlocked' is the unit.
 --   'MissingClauses' is dominant.
@@ -394,7 +396,7 @@ data Clause = Clause
     , clauseCatchall  :: Bool
       -- ^ Clause has been labelled as CATCHALL.
     }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 clausePats :: Clause -> [Arg DeBruijnPattern]
 clausePats = map (fmap namedThing) . namedClausePats
@@ -425,11 +427,15 @@ data Pattern' x
   | ConP ConHead ConPatternInfo [NamedArg (Pattern' x)]
     -- ^ @c ps@
     --   The subpatterns do not contain any projection copatterns.
+  | AbsurdP (Pattern' x)
+    -- ^ @()@
+    --   The argument is to keep track of the original pattern
+    --   (before the absurd match).
   | LitP Literal
     -- ^ E.g. @5@, @"hello"@.
   | ProjP ProjOrigin QName
     -- ^ Projection copattern.  Can only appear by itself.
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 type Pattern = Pattern' PatVarName
     -- ^ The @PatVarName@ is a name suggestion.
@@ -441,7 +447,7 @@ varP = VarP
 data DBPatVar = DBPatVar
   { dbPatVarName  :: PatVarName
   , dbPatVarIndex :: Int
-  } deriving (Typeable, Show)
+  } deriving (Typeable, Data, Show)
 
 type DeBruijnPattern = Pattern' DBPatVar
 
@@ -471,7 +477,7 @@ data ConPatternInfo = ConPatternInfo
     --   plugin (like Agsy).
     --   Needed e.g. for with-clause stripping.
   }
-  deriving (Typeable, Show)
+  deriving (Typeable, Data, Show)
 
 noConPatternInfo :: ConPatternInfo
 noConPatternInfo = ConPatternInfo Nothing Nothing
@@ -494,6 +500,7 @@ instance PatternVars a (Arg (Pattern' a)) where
   -- patternVars :: Arg (Pattern' a) -> [Arg (Either a Term)]
   patternVars (Arg i (VarP x)     ) = [Arg i $ Left x]
   patternVars (Arg i (DotP t)     ) = [Arg i $ Right t]
+  patternVars (Arg i (AbsurdP p)  ) = patternVars (Arg i p)
   patternVars (Arg _ (ConP _ _ ps)) = patternVars ps
   patternVars (Arg _ (LitP _)     ) = []
   patternVars (Arg _ ProjP{}      ) = []
@@ -506,8 +513,9 @@ instance PatternVars a b => PatternVars a [b] where
 
 -- | Does the pattern perform a match that could fail?
 properlyMatching :: DeBruijnPattern -> Bool
-properlyMatching (VarP x) = isAbsurdPatternName $ dbPatVarName x
+properlyMatching (VarP x) = False
 properlyMatching DotP{} = False
+properlyMatching AbsurdP{} = True
 properlyMatching LitP{} = True
 properlyMatching (ConP _ ci ps) = isNothing (conPRecord ci) || -- not a record cons
   List.any (properlyMatching . namedArg) ps  -- or one of subpatterns is a proper m
@@ -570,7 +578,15 @@ data Substitution' a
     --     Γ, Ψρ ⊢ Lift |Ψ| ρ : Δ, Ψ
     --   @
 
-  deriving (Show, Functor, Foldable, Traversable)
+  deriving ( Show
+           , Functor
+           , Foldable
+           , Traversable
+           , Data
+#if __GLASGOW_HASKELL__ <= 708
+           , Typeable
+#endif
+           )
 
 type Substitution = Substitution' Term
 type PatternSubstitution = Substitution' DeBruijnPattern
@@ -1087,6 +1103,7 @@ instance KillRange a => KillRange (Pattern' a) where
     case p of
       VarP x           -> killRange1 VarP x
       DotP v           -> killRange1 DotP v
+      AbsurdP p        -> killRange1 AbsurdP p
       ConP con info ps -> killRange3 ConP con info ps
       LitP l           -> killRange1 LitP l
       ProjP o q        -> killRange1 (ProjP o) q
@@ -1237,6 +1254,7 @@ instance Pretty DBPatVar where
 instance Pretty a => Pretty (Pattern' a) where
   prettyPrec n (VarP x)      = prettyPrec n x
   prettyPrec _ (DotP t)      = text "." P.<> prettyPrec 10 t
+  prettyPrec _ (AbsurdP _)   = text "()"
   prettyPrec n (ConP c i nps)= mparens (n > 0) $
     text (show $ conName c) <+> fsep (map pretty ps)
     where ps = map (fmap namedThing) nps

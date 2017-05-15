@@ -7,10 +7,10 @@
 #if __GLASGOW_HASKELL__ >= 800
 {-# OPTIONS_GHC -Wno-semigroup    #-}
 #endif
+
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
 #endif
-
 
 module Agda.TypeChecking.Pretty where
 
@@ -382,6 +382,7 @@ instance PrettyTCM DBPatVar where
 instance PrettyTCM a => PrettyTCM (Pattern' a) where
   prettyTCM (VarP x)      = prettyTCM x
   prettyTCM (DotP t)      = text ".(" <> prettyTCM t <> text ")"
+  prettyTCM (AbsurdP _)   = text absurdPatternName
   prettyTCM (ConP c i ps) = (if b then braces else parens) $ prTy $
         prettyTCM c <+> fsep (map (prettyTCM . namedArg) ps)
         where
