@@ -320,6 +320,28 @@ prop_composeS theta =
   applySubst (composeS rho sgm) v === applySubst rho (applySubst sgm v)
 
 -- | @
+--     Γ ⊢ σ : Δ   Γ ⊢ ρ : Ψ, A, Θ
+--    ------------------------------
+--    Γ ⊢ lookupConsS ρ |Θ| σ : Δ, A
+--   @
+--   and
+--   @
+--      lookupConsS ρ i σ
+--        | i ∈ support(ρ) = lookupS ρ i :# σ
+--        | otherwise      = Strengthen σ
+--   @
+prop_lookupConsS :: Cx -> Cx -> Cx -> Ty -> Property
+prop_lookupConsS delta psi theta t =
+  forAll (genSub (delta <> (psi :> t) <> theta)) $ \ (gamma, sgmrho) ->
+  let (sgm, rho) = splitS (cxLen psi + 1 + cxLen theta) sgmrho
+      i          = cxLen theta
+      sub        = lookupConsS rho i sgm in
+  checkSub gamma sub (delta :> t) .&&.
+  case t of
+    X -> eqSub sub (Strengthen (error "lookupConsS") sgm) (delta :> t)
+    _ -> eqSub sub (lookupS rho i :# sgm) (delta :> t)
+
+-- | @
 --      Γ ⊢ ρ : Δ  Γ ⊢ reverse vs : Θ
 --      ----------------------------- (treating Nothing as having any type)
 --        Γ ⊢ prependS vs ρ : Δ, Θ
@@ -340,21 +362,28 @@ prop_parallelS gamma delta =
   checkSub gamma (parallelS vs) (gamma <> delta)
 
 qc :: Testable p => p -> IO Bool
-qc p = quickCheckWith' stdArgs{maxSuccess = 500} p
+qc = qc' 500
+
+qc' :: Testable p => Int -> p -> IO Bool
+qc' n p = quickCheckWith' stdArgs{maxSuccess = n} p
 
 tests :: IO Bool
-tests = runTests "InternalTests.TypeChecking.Substitute"
-  [ qc prop_genTm
-  , qc prop_genSub
-  , qc prop_wkS
-  , qc prop_liftS
-  , qc prop_consS
-  , qc prop_singletonS
-  , qc prop_inplaceS
-  , qc prop_dropS
-  , qc prop_splitS
-  , qc prop_composeS_type
-  , qc prop_composeS
-  , qc prop_prependS
-  , qc prop_parallelS ]
+tests = tests' 500
+
+tests' :: Int -> IO Bool
+tests' n = runTests "InternalTests.TypeChecking.Substitute"
+  [ qc' n prop_genTm
+  , qc' n prop_genSub
+  , qc' n prop_wkS
+  , qc' n prop_liftS
+  , qc' n prop_consS
+  , qc' n prop_singletonS
+  , qc' n prop_inplaceS
+  , qc' n prop_dropS
+  , qc' n prop_splitS
+  , qc' n prop_composeS_type
+  , qc' n prop_composeS
+  , qc' n prop_lookupConsS
+  , qc' n prop_prependS
+  , qc' n prop_parallelS ]
 
