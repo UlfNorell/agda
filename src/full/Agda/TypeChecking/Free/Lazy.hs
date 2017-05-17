@@ -332,14 +332,14 @@ instance Free EqualityView where
 
 -- Dealing with explicit substitutions ------------------------------------
 
-freeLet :: IsVarSet c => Substitution -> Term -> FreeM c c
+freeLet :: (IsVarSet c, Free a) => Substitution' a -> a -> FreeM c c
 -- freeLet rho v = freeVars' (applySubstTm rho v)
 freeLet rho v = do
   fvrho <- freeSubst rho
   local (\ env -> env { feSingleton = lookupFree fvrho $ feSingleton env })
       $ freeVars' v
 
-freeSubst :: forall c a. (IsVarSet c, Free a) => Substitution' a -> FreeM c (Substitution' c)
+freeSubst :: (IsVarSet c, Free a) => Substitution' a -> FreeM c (Substitution' c)
 freeSubst rho =
   case rho of
     IdS                -> pure IdS
