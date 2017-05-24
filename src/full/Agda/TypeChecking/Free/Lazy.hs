@@ -349,21 +349,20 @@ freeSubst rho =
     Wk n rho           -> Wk   n <$> bind' (-n) (freeSubst rho)
     Lift n rho         -> Lift n <$> bind' (-n) (freeSubst rho)
 
-lookupFree :: IsVarSet c => Substitution' c -> SingleVar c -> SingleVar c
-lookupFree rho single i
-  | i < 0     = mempty    -- weakening and lifting might make this positive again,
-  | otherwise =           -- so we need to shortcut here!
+lookupFree :: IsVarSet c => Substitution' c -> (Maybe Variable -> c) -> Maybe Variable -> c
+lookupFree rho single Nothing = mempty
+lookupFree rho single i@(Just i') =
   case rho of
     IdS                -> single i
     EmptyS             -> __IMPOSSIBLE__
     u :# rho
-      | i == 0         -> u
-      | otherwise      -> lookupFree rho single (i - 1)
+      | i' == 0        -> u
+      | otherwise      -> lookupFree rho single (subVar 1 i)
     Strengthen err rho
-      | i == 0         -> absurd err
-      | otherwise      -> lookupFree rho single (i - 1)
-    Wk n rho           -> lookupFree rho (single . (+ n)) i
+      | i' == 0        -> absurd err
+      | otherwise      -> lookupFree rho single (subVar 1 i)
+    Wk n rho           -> lookupFree rho (single . subVar (-n)) i
     Lift n rho
-      | i < n          -> single i
-      | otherwise      -> lookupFree rho (single . (+ n)) (i - n)
+      | i' < n         -> single i
+      | otherwise      -> lookupFree rho (single . subVar (-n)) (subVar n i)
 
