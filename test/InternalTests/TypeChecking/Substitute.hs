@@ -399,12 +399,21 @@ prop_parallelS gamma delta =
 --   @
 prop_freeLet :: Cx -> Ty -> Property
 prop_freeLet delta t =
-  forAll       (genSub delta)         $ \ (_, rho) ->
+  forAll       (genSub delta)         $ \ (gamma, rho) ->
   forAllShrink (genTm delta t) shrink $ \ v ->
+  whenFail (debug gamma rho v) $
     run (freeLet rho v) === run (freeVars' $ applySubst rho v)
   where
     run :: FreeM IntSet IntSet -> [Int]
     run = Set.toList . runFreeM Set.singleton IgnoreNot
+
+    debug gamma rho v = putStr $ unlines
+      [ show $ sep [ pretty gamma <+> text "⊢"
+                   , nest 2 $ text "ρ =" <+> pretty rho <+> text ":"
+                   , nest 2 $ pretty delta ]
+      , show $ text "v  =" <+> pretty v <+> text ":" <+> pretty t
+      , show $ text "vρ =" <+> pretty (applySubst rho v)
+      ]
 
 qc :: Testable p => p -> IO Bool
 qc = qc' 500
