@@ -350,7 +350,9 @@ freeSubst rho =
     Lift n rho         -> Lift n <$> bind' (-n) (freeSubst rho)
 
 lookupFree :: IsVarSet c => Substitution' c -> SingleVar c -> SingleVar c
-lookupFree rho single i =
+lookupFree rho single i
+  | i < 0     = mempty    -- weakening and lifting might make this positive again,
+  | otherwise =           -- so we need to shortcut here!
   case rho of
     IdS                -> single i
     EmptyS             -> __IMPOSSIBLE__
