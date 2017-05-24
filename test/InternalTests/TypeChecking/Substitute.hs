@@ -17,6 +17,8 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Free.Lazy
 import Agda.TypeChecking.Free
 
+import Agda.Utils.Pretty hiding ((<>))
+
 import InternalTests.Helpers (runTests, quickCheckWith')
 
 -- Contexts, types and terms ----------------------------------------------
@@ -42,19 +44,35 @@ type Sub = Substitution' Tm
 
 -- Pretty printing --------------------------------------------------------
 
--- instance Show Cx where
---   showsPrec _ Nil = showString "()"
---   showsPrec p (Nil :> t) = shows t
---   showsPrec p (g :> t) = showParen (p > 2) $
---     showsPrec 2 g . showString ", " . showsPrec 3 t
+instance Pretty Cx where
+  prettyPrec _ Nil = text "()"
+  prettyPrec p g   = mparens (p > 2) $
+    fsep $ punctuate comma $ map (prettyPrec 3) $ cxToList g
 
--- instance Show Ty where
---   showsPrec p t = case t of
---     A -> showString "A"
---     B -> showString "B"
---     C -> showString "C"
---     s :-> t -> showParen (p > 1) $
---       showsPrec 2 s . showString " -> " . showsPrec 1 t
+instance Pretty Ty where
+  prettyPrec p t = case t of
+    A -> text "A"
+    B -> text "B"
+    C -> text "C"
+    X -> text "X"
+    s :-> t -> mparens (p > 1) $
+      hang (prettyPrec 2 s <+> text " -> ") 2 (prettyPrec 1 t)
+
+instance Pretty Tm where
+  prettyPrec = go [] vars
+    where
+      vars = [ c : i | i <- "" : map show [1..], c <- "xyz" ++ ['a'..'w'] ]
+      go bound vars@(~(x : vars')) p v =
+        case v of
+          VarT i | i < length bound -> text (bound !! i)
+                 | otherwise        -> text $ show (i - length bound)
+          AnnT t v -> mparens (p > 0) $ hang (pp 1 v <+> text ":") 2 (pretty t)
+          ConT t vs -> mparens (not (null vs) && p > 9) $
+            text "Con" <+> fsep (prettyPrec 10 t : map (pp 10) vs)
+          LamT t b -> mparens (p > 0) $
+            hang (text $ "λ " ++ x ++ ".") 2 (go (x : bound) vars' 0 b)
+        where
+          pp = go bound vars
 
 -- Helper functions -------------------------------------------------------
 
