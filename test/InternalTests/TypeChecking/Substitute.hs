@@ -8,10 +8,14 @@ import Data.Maybe
 import Data.Monoid hiding ((<>))
 import Data.Semigroup
 import Data.Traversable (traverse)
+import qualified Data.IntSet as Set
+import Data.IntSet (IntSet)
 import Test.QuickCheck
 
 import Agda.Syntax.Internal
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Free.Lazy
+import Agda.TypeChecking.Free
 
 import InternalTests.Helpers (runTests, quickCheckWith')
 
@@ -94,6 +98,13 @@ instance Subst Tm Tm where
     AnnT t v  -> AnnT t $ applySubst rho v
     ConT t vs -> ConT t $ map (applySubst rho) vs
     LamT t b  -> LamT t $ applySubst (liftS 1 rho) b
+
+instance Free Tm where
+  freeVars' v = case v of
+    VarT x    -> variable x
+    AnnT _ v  -> freeVars' v
+    ConT _ vs -> freeVars' vs
+    LamT _ b  -> freeVars' (Abs "" b)
 
 -- Checking terms ---------------------------------------------------------
 
@@ -360,6 +371,22 @@ prop_parallelS :: Cx -> Cx -> Property
 prop_parallelS gamma delta =
   forAllShrink (mapM (genTm gamma) (map snd $ contextVars delta)) (traverse shrink) $ \ vs ->
   checkSub gamma (parallelS vs) (gamma <> delta)
+
+-- Properties about the free variable analysis --
+
+-- | @
+--             Γ ⊢ ρ : Δ      Δ ⊢ v : t
+--      ----------------------------------------
+--      freeLet ρ v == freeVars (applySubst ρ v)
+--   @
+prop_freeLet :: Cx -> Ty -> Property
+prop_freeLet delta t =
+  forAll       (genSub delta)         $ \ (_, rho) ->
+  forAllShrink (genTm delta t) shrink $ \ v ->
+    run (freeLet rho v) === run (freeVars' $ applySubst rho v)
+  where
+    run :: FreeM IntSet IntSet -> [Int]
+    run = Set.toList . runFreeM Set.singleton IgnoreNot
 
 qc :: Testable p => p -> IO Bool
 qc = qc' 500
