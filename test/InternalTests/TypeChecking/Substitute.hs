@@ -430,5 +430,6 @@ tests' n = runTests "InternalTests.TypeChecking.Substitute"
   , qc' n prop_composeS
   , qc' n prop_lookupConsS
   , qc' n prop_prependS
-  , qc' n prop_parallelS ]
+  , qc' n prop_parallelS
+  , qc' n prop_freeLet ]
 
