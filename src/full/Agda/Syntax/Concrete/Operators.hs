@@ -25,7 +25,7 @@ import Control.Monad
 import Data.Either (partitionEithers)
 import qualified Data.Foldable as Fold
 import Data.Function
-import Data.List
+import qualified Data.List as List
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -48,16 +48,13 @@ import Agda.Syntax.Scope.Monad
 
 import Agda.TypeChecking.Monad.Base (typeError, TypeError(..), LHSOrPatSyn(..))
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.State (getScope)
 import Agda.TypeChecking.Monad.Options
 
 import Agda.Utils.Either
 import Agda.Utils.Pretty
-#if MIN_VERSION_base(4,8,0)
-import Agda.Utils.List hiding ( uncons )
-#else
 import Agda.Utils.List
-#endif
 import Agda.Utils.Trie (Trie)
 import qualified Agda.Utils.Trie as Trie
 
@@ -262,7 +259,7 @@ buildParsers r flat kind exprNames = do
         -- resulting in a confusing error message claiming that "if"
         -- is not in scope.
 
-        (non, fix) = partition nonfix (filter (and . partsPresent) ops)
+        (non, fix) = List.partition nonfix (filter (and . partsPresent) ops)
 
         cons       = getDefinedNames [ConName, PatternSynName] flat
         conNames   = Set.fromList $
@@ -330,8 +327,8 @@ buildParsers r flat kind exprNames = do
         relatedOperators :: [(Integer, [NotationSection])]
         relatedOperators =
           map (\((l, ns) : rest) -> (l, ns ++ concat (map snd rest))) .
-          groupBy ((==) `on` fst) .
-          sortBy (compare `on` fst) .
+          List.groupBy ((==) `on` fst) .
+          List.sortBy (compare `on` fst) .
           mapMaybe (\n -> case level n of
                             Unrelated     -> Nothing
                             r@(Related l) ->
@@ -717,7 +714,7 @@ appView p = case p of
 --   for @Data.Nat._+_@ we return the list @[Data,Nat]@.
 qualifierModules :: [QName] -> [[Name]]
 qualifierModules qs =
-  nub $ filter (not . null) $ map (init . qnameParts) qs
+  List.nub $ filter (not . null) $ map (init . qnameParts) qs
 
 -- | Parse a list of expressions into an application.
 parseApplication :: [Expr] -> ScopeM Expr
@@ -801,9 +798,9 @@ fullParen' e = case exprView e of
     AppV e1 (Arg info e2) -> par $ unExprView $ AppV (fullParen' e1) (Arg info e2')
         where
             e2' = case argInfoHiding info of
-                Hidden    -> e2
-                Instance  -> e2
-                NotHidden -> fullParen' <$> e2
+                Hidden     -> e2
+                Instance{} -> e2
+                NotHidden  -> fullParen' <$> e2
     OpAppV x ns es -> par $ unExprView $ OpAppV x ns $ (map . fmap . fmap . fmap . fmap) fullParen' es
     LamV bs e -> par $ unExprView $ LamV bs (fullParen e)
     where

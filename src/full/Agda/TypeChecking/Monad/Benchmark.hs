@@ -15,6 +15,7 @@ import Prelude hiding (print)
 import Agda.Benchmarking
 
 import Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Debug
 import{-# SOURCE #-} Agda.TypeChecking.Monad.Options
 
 import qualified Agda.Utils.Benchmark as B
@@ -67,7 +68,12 @@ benchmarking = liftTCM $ do
 print :: MonadTCM tcm => tcm ()
 print = liftTCM $ whenM (B.isBenchmarkOn [] <$> benchmarking) $ do
   b <- B.getBenchmark
-  reportSLn "" 0 $ prettyShow b
+  -- Andreas, 2017-07-29, issue #2602:
+  -- The following line messes up the AgdaInfo buffer,
+  -- thus, as Fredrik Forsberg suggest, I restore the original
+  -- line for release 2.5.3 until a fix is found.
+  -- reportSLn "" 0 $ prettyShow b
+  reportSLn benchmarkKey benchmarkLevel $ prettyShow b
 
 -- -- | Bill a computation to a specific account.
 -- {-# SPECIALIZE billTo :: Account -> TCM a -> TCM a #-}

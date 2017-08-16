@@ -69,6 +69,7 @@ import Agda.Utils.ListT
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Permutation
+import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
 
 #include "undefined.h"
@@ -87,7 +88,14 @@ class IsFlexiblePattern a where
   maybeFlexiblePattern :: a -> MaybeT TCM FlexibleVarKind
 
   isFlexiblePattern :: a -> TCM Bool
-  isFlexiblePattern p = isJust <$> runMaybeT (maybeFlexiblePattern p)
+  isFlexiblePattern p =
+    maybe False notOtherFlex <$> runMaybeT (maybeFlexiblePattern p)
+    where
+    notOtherFlex = \case
+      RecordFlex fls -> all notOtherFlex fls
+      ImplicitFlex   -> True
+      DotFlex        -> True
+      OtherFlex      -> False
 
 instance IsFlexiblePattern A.Pattern where
   maybeFlexiblePattern p =
@@ -97,8 +105,9 @@ instance IsFlexiblePattern A.Pattern where
       A.WildP{} -> return ImplicitFlex
       A.AsP _ _ p -> maybeFlexiblePattern p
       A.ConP _ (A.AmbQ [c]) qs
-        -> ifM (isNothing <$> isRecordConstructor c) mzero {-else-}
+        -> ifM (isNothing <$> isRecordConstructor c) (return OtherFlex) {-else-}
              (maybeFlexiblePattern qs)
+      A.LitP{}  -> return OtherFlex
       _ -> mzero
 
 instance IsFlexiblePattern (I.Pattern' a) where
@@ -156,29 +165,31 @@ updateInPatterns as ps qs = do
         A.DotP _ _ e -> return (IntMap.empty, [DPI Nothing  (Just e) u a])
         A.WildP _  -> return (IntMap.empty, [DPI Nothing  Nothing  u a])
         A.VarP x   -> return (IntMap.empty, [DPI (Just x) Nothing  u a])
-        A.ConP _ (A.AmbQ [c]) qs -> do
-          Def r es  <- ignoreSharing <$> reduce (unEl $ unDom a)
-          let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-          (ftel, us) <- etaExpandRecord r vs u
+        p@(A.ConP _ (A.AmbQ [c]) qs) -> ifM (isNothing <$> isRecordConstructor c)
+          (return (IntMap.empty, [DPI Nothing (Just $ A.patternToExpr p) u a]))
+          (do
+            Def r es  <- ignoreSharing <$> reduce (unEl $ unDom a)
+            let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
+            (ftel, us) <- etaExpandRecord r vs u
 
-          qs <- insertImplicitPatterns ExpandLast qs ftel
-          reportSDoc "tc.lhs.imp" 20 $
-            text "insertImplicitPatternsT returned" <+> fsep (map prettyA qs)
+            qs <- insertImplicitPatterns ExpandLast qs ftel
+            reportSDoc "tc.lhs.imp" 20 $
+              text "insertImplicitPatternsT returned" <+> fsep (map prettyA qs)
 
-          let instTel EmptyTel _                   = []
-              instTel (ExtendTel arg tel) (u : us) = arg : instTel (absApp tel u) us
-              instTel ExtendTel{} []               = __IMPOSSIBLE__
-              bs0 = instTel ftel (map unArg us)
-              -- Andreas, 2012-09-19 propagate relevance info to dot patterns
-              bs  = map (mapRelevance (composeRelevance (getRelevance a))) bs0
-          updates bs qs (map (DotP . unArg) us `withArgsFrom` teleArgNames ftel)
+            let instTel EmptyTel _                   = []
+                instTel (ExtendTel arg tel) (u : us) = arg : instTel (absApp tel u) us
+                instTel ExtendTel{} []               = __IMPOSSIBLE__
+                bs0 = instTel ftel (map unArg us)
+                -- Andreas, 2012-09-19 propagate relevance info to dot patterns
+                bs  = map (mapRelevance (composeRelevance (getRelevance a))) bs0
+            updates bs qs (map (DotP . unArg) us `withArgsFrom` teleArgNames ftel))
+        p@A.ConP{} -> return (IntMap.empty, [DPI Nothing (Just $ A.patternToExpr p) u a])
+        p@A.LitP{} -> return (IntMap.empty, [DPI Nothing (Just $ A.patternToExpr p) u a])
         A.AsP         _ _ _ -> __IMPOSSIBLE__
-        A.ConP        _ _ _ -> __IMPOSSIBLE__
         A.RecP        _ _   -> __IMPOSSIBLE__
         A.ProjP       _ _ _ -> __IMPOSSIBLE__
         A.DefP        _ _ _ -> __IMPOSSIBLE__
         A.AbsurdP     _     -> __IMPOSSIBLE__
-        A.LitP        _     -> __IMPOSSIBLE__
         A.PatternSynP _ _ _ -> __IMPOSSIBLE__
       -- Case: the unifier eta-expanded the variable
       ConP c cpi qs -> do
@@ -225,7 +236,7 @@ updateInPatterns as ps qs = do
               { A.metaRange          = getRange pi
               , A.metaScope          = emptyScopeInfo
               , A.metaNumber         = Nothing
-              , A.metaNameSuggestion = show $ A.nameConcrete $ qnameName f
+              , A.metaNameSuggestion = prettyShow $ qnameName f
               }
 
 
@@ -288,7 +299,7 @@ noShadowingOfConstructors mkCall problem =
   noShadowing (A.PatternSynP {}) t = __IMPOSSIBLE__
   noShadowing (A.VarP x)       t = do
     reportSDoc "tc.lhs.shadow" 30 $ vcat
-      [ text $ "checking whether pattern variable " ++ show x ++ " shadows a constructor"
+      [ text $ "checking whether pattern variable " ++ prettyShow x ++ " shadows a constructor"
       , nest 2 $ text "type of variable =" <+> prettyTCM t
       ]
     reportSLn "tc.lhs.shadow" 70 $ "  t = " ++ show t
@@ -343,7 +354,7 @@ checkDotPattern (DPI _ (Just e) v (Dom info a)) =
         ]
   applyRelevanceToContext (argInfoRelevance info) $ do
     u <- checkExpr e a
-    reportSDoc "tc.lhs.dot" 30 $
+    reportSDoc "tc.lhs.dot" 50 $
       sep [ text "equalTerm"
           , nest 2 $ text $ show a
           , nest 2 $ text $ show u
@@ -492,7 +503,7 @@ bindLHSVars (_ : _)   EmptyTel         _   = __IMPOSSIBLE__
 bindLHSVars []        EmptyTel         ret = ret
 bindLHSVars (p : ps) tel0@(ExtendTel a tel) ret = do
   -- see test/Fail/WronHidingInLHS:
-  unless (getHiding p == getHiding a) $ typeError WrongHidingInLHS
+  unless (sameHiding p a) $ typeError WrongHidingInLHS
 
   case namedArg p of
     A.VarP x      -> addContext (x, a) $ bindLHSVars ps (absBody tel) ret
@@ -584,7 +595,7 @@ checkLeftHandSide c f ps a withSub' = Bench.billToCPS [Bench.Typing, Bench.Check
   -- context arguments as wildcard patterns and extending the type with the
   -- context telescope.
   cxt <- reverse <$> getContext
-  let tel = telFromList' show cxt
+  let tel = telFromList' prettyShow cxt
       cps = [ unnamed . A.VarP . fst <$> setOrigin Inserted (argFromDom d)
             | d <- cxt ]
   problem0 <- problemFromPats (cps ++ ps) (telePi tel a)
@@ -658,7 +669,7 @@ checkLeftHandSide c f ps a withSub' = Bench.billToCPS [Bench.Typing, Bench.Check
           withSub = fromMaybe (wkS (numPats - length cxt) idS) withSub'
           -- At this point we need to update the module parameters for all
           -- parent modules.
-          patSub   = (map (patternToTerm . namedArg) $ reverse $ take numPats qs) ++# EmptyS
+          patSub   = (map (patternToTerm . namedArg) $ reverse $ take numPats qs) ++# (EmptyS __IMPOSSIBLE__)
           paramSub = composeS patSub withSub
           lhsResult = LHSResult (length cxt) delta qs b' patSub asb'
       reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "patSub   = " <+> text (show patSub)
@@ -672,8 +683,6 @@ checkLeftHandSide c f ps a withSub' = Bench.billToCPS [Bench.Typing, Bench.Check
       bindAsPatterns newLets $
         applyRelevanceToContext (getRelevance b') $ updateModuleParameters paramSub $ do
         bindAsPatterns asb' $ do
-
-          rebindLocalRewriteRules
 
           -- Check dot patterns
           mapM_ checkDotPattern dpi
@@ -806,7 +815,10 @@ checkLHS f st@(LHSState problem dpi sbe) = do
             ]
           ]
 
-        c <- (`withRangeOf` c) <$> getConForm c
+        c <- either
+               (sigError __IMPOSSIBLE_VERBOSE__ (typeError $ AbstractConstructorNotInScope c))
+               (return . (`withRangeOf` c))
+               =<< getConForm c
         ca <- defType <$> getConInfo c
 
         reportSDoc "tc.lhs.split" 20 $ nest 2 $ vcat

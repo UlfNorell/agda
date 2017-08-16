@@ -45,6 +45,7 @@ import Agda.Auto.CaseSplit hiding (lift)
 import Agda.Utils.Either
 import Agda.Utils.Except ( ExceptT , MonadError(throwError) )
 import Agda.Utils.Lens
+import Agda.Utils.Pretty ( prettyShow )
 
 import Agda.Utils.Impossible
 #include "undefined.h"
@@ -114,7 +115,7 @@ tomy imi icns typs = do
            return (Def narg clauses' Nothing Nothing, [])
      (cont, projfcns2) <- case defn of
       MB.Axiom {} -> return (Postulate, [])
-      MB.AbstractDefn -> return (Postulate, [])
+      MB.AbstractDefn{} -> return (Postulate, [])
       MB.Function {MB.funClauses = clauses} -> clausesToDef clauses
       -- MB.Primitive {MB.primClauses = []} -> throwError $ strMsg "Auto: Primitive functions are not supported" -- Andreas, 2013-06-17 breaks interaction/AutoMisc
       MB.Primitive {MB.primClauses = clauses} -> clausesToDef clauses
@@ -233,8 +234,8 @@ getConst iscon name mode = do
      mainm <- gets sMainMeta
      dfv <- lift $ getdfv mainm name
      let nomi = I.arity (MB.defType def)
-     ccon <- lift $ liftIO $ newIORef (ConstDef {cdname = show name ++ ".CONS", cdorigin = (Just nomi, conname), cdtype = __IMPOSSIBLE__, cdcont = Constructor (nomi - dfv), cddeffreevars = dfv}) -- ?? correct value of deffreevars for records?
-     c <- lift $ liftIO $ newIORef (ConstDef {cdname = show name, cdorigin = (Nothing, name), cdtype = __IMPOSSIBLE__, cdcont = Datatype [ccon] [], cddeffreevars = dfv}) -- ?? correct value of deffreevars for records?
+     ccon <- lift $ liftIO $ newIORef (ConstDef {cdname = prettyShow name ++ ".CONS", cdorigin = (Just nomi, conname), cdtype = __IMPOSSIBLE__, cdcont = Constructor (nomi - dfv), cddeffreevars = dfv}) -- ?? correct value of deffreevars for records?
+     c <- lift $ liftIO $ newIORef (ConstDef {cdname = prettyShow name, cdorigin = (Nothing, name), cdtype = __IMPOSSIBLE__, cdcont = Datatype [ccon] [], cddeffreevars = dfv}) -- ?? correct value of deffreevars for records?
      modify (\s -> s {sConsts = (Map.insert name (mode, c) cmap, name : snd (sConsts s))})
      return $ if iscon then ccon else c
   _ -> do
@@ -245,9 +246,9 @@ getConst iscon name mode = do
     Nothing -> do
      (miscon, sname) <- if iscon then do
        let MB.Constructor {MB.conPars = npar, MB.conData = dname} = MB.theDef def
-       return (Just npar, show dname ++ "." ++ show (I.qnameName name))
+       return (Just npar, prettyShow dname ++ "." ++ prettyShow (I.qnameName name))
       else
-       return (Nothing, show name)
+       return (Nothing, prettyShow name)
      mainm <- gets sMainMeta
      dfv <- lift $ getdfv mainm name
      c <- lift $ liftIO $ newIORef (ConstDef {cdname = sname, cdorigin = (miscon, name), cdtype = __IMPOSSIBLE__, cdcont = __IMPOSSIBLE__, cddeffreevars = dfv})
@@ -442,17 +443,17 @@ fmLevel m (I.Plus _ l) = case l of
 -- ---------------------------------------------
 
 icnvh :: Hiding -> Cm.ArgInfo
-icnvh h = Cm.setHiding h' $
+icnvh h = Cm.setHiding h $
           Cm.setOrigin o $
           Cm.defaultArgInfo
     where
     -- Andreas, 2017-01-18, issue #819.
     -- Visible arguments are made UserWritten,
     -- otherwise they might not be printed in patterns.
-    (h', o) = case h of
-        NotHidden -> (Cm.NotHidden, Cm.UserWritten)
-        Instance  -> (Cm.Instance , Cm.Inserted   )
-        Hidden    -> (Cm.Hidden   , Cm.Inserted   )
+    o = case h of
+          NotHidden  -> Cm.UserWritten
+          Instance{} -> Cm.Inserted
+          Hidden     -> Cm.Inserted
 
 -- ---------------------------------------------
 
@@ -546,7 +547,7 @@ modifyAbstractExpr = f
   f (A.App i e1 (Cm.Arg info (Cm.Named n e2))) =
         A.App i (f e1) (Cm.Arg info (Cm.Named n (f e2)))
   f (A.Lam i (A.DomainFree info n) _)
-     | show (A.nameConcrete n) == abslamvarname =
+     | prettyShow (A.nameConcrete n) == abslamvarname =
         A.AbsurdLam i $ Cm.argInfoHiding info
   f (A.Lam i b e) = A.Lam i b (f e)
   f (A.Rec i xs) = A.Rec i (map (mapLeft (over exprFieldA f)) xs)
@@ -585,7 +586,7 @@ constructPats cmap mainm clause = do
         return (ns, HI hid (CSPatExp t2))
        I.AbsurdP{} -> return ((hid, Id I.absurdPatternName) : ns, HI hid (CSPatVar $ length ns))
        I.ProjP{} -> copatternsNotImplemented
-       _ -> __IMPOSSIBLE__
+       I.LitP{} -> literalsNotImplemented
  (names, pats) <- cnvps [] (IP.unnumberPatVars $ I.namedClausePats clause)
  return (reverse names, pats)
 

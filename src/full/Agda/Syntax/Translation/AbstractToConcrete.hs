@@ -51,6 +51,7 @@ import Agda.Syntax.Scope.Base
 
 import Agda.TypeChecking.Monad.State (getScope)
 import Agda.TypeChecking.Monad.Base  (TCM, NamedMeta(..), stBuiltinThings, BuiltinThings, Builtin(..))
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 
 import qualified Agda.Utils.AssocList as AssocList
@@ -143,7 +144,7 @@ lookupQName :: AllowAmbiguousNames -> A.QName -> AbsToCon C.QName
 lookupQName ambCon x = do
   ys <- inverseScopeLookupName' ambCon x <$> asks currentScope
   lift $ reportSLn "scope.inverse" 100 $
-    "inverse looking up abstract name " ++ show x ++ " yields " ++ show ys
+    "inverse looking up abstract name " ++ prettyShow x ++ " yields " ++ prettyShow ys
   case ys of
     (y : _) -> return y
     [] -> do
@@ -258,6 +259,9 @@ class ToConcrete a c | a -> c where
     toConcrete :: a -> AbsToCon c
     bindToConcrete :: a -> (c -> AbsToCon b) -> AbsToCon b
 
+    -- Christian Sattler, 2017-08-05:
+    -- These default implementations are not valid semantically (at least
+    -- the second one). Perhaps they (it) should be removed.
     toConcrete     x     = bindToConcrete x return
     bindToConcrete x ret = ret =<< toConcrete x
 
@@ -281,17 +285,17 @@ bindToConcreteTop = bindToConcreteCtx TopCtx
 toConcreteHiding :: (LensHiding h, ToConcrete a c) => h -> a -> AbsToCon c
 toConcreteHiding h =
   case getHiding h of
-    NotHidden -> toConcrete
-    Hidden    -> toConcreteTop
-    Instance  -> toConcreteTop
+    NotHidden  -> toConcrete
+    Hidden     -> toConcreteTop
+    Instance{} -> toConcreteTop
 
 -- | Translate something in a context indicated by 'Hiding' info.
 bindToConcreteHiding :: (LensHiding h, ToConcrete a c) => h -> a -> (c -> AbsToCon b) -> AbsToCon b
 bindToConcreteHiding h =
   case getHiding h of
-    NotHidden -> bindToConcrete
-    Hidden    -> bindToConcreteTop
-    Instance  -> bindToConcreteTop
+    NotHidden  -> bindToConcrete
+    Hidden     -> bindToConcreteTop
+    Instance{} -> bindToConcreteTop
 
 -- General instances ------------------------------------------------------
 
@@ -442,9 +446,9 @@ instance ToConcrete A.Expr C.Expr where
         bracket lamBrackets $ do
           decls <- concat <$> toConcrete cs
           let namedPat np = case getHiding np of
-                 NotHidden -> namedArg np
-                 Hidden    -> C.HiddenP noRange (unArg np)
-                 Instance  -> C.InstanceP noRange (unArg np)
+                 NotHidden  -> namedArg np
+                 Hidden     -> C.HiddenP noRange (unArg np)
+                 Instance{} -> C.InstanceP noRange (unArg np)
               -- we know all lhs are of the form `.extlam p1 p2 ... pn`,
               -- with the name .extlam leftmost. It is our mission to remove it.
           let removeApp (C.RawAppP r (_:es)) = return $ C.RawAppP r es
@@ -487,9 +491,9 @@ instance ToConcrete A.Expr C.Expr where
                            _          -> e
             addDot a e = C.Dot (getRange a) e
             mkArg (Arg info e) = case getHiding info of
-                                          Hidden    -> HiddenArg   (getRange e) (unnamed e)
-                                          Instance  -> InstanceArg (getRange e) (unnamed e)
-                                          NotHidden -> e
+                                          Hidden     -> HiddenArg   (getRange e) (unnamed e)
+                                          Instance{} -> InstanceArg (getRange e) (unnamed e)
+                                          NotHidden  -> e
 
     toConcrete (A.Set i 0)  = return $ C.Set (getRange i)
     toConcrete (A.Set i n)  = return $ C.SetN (getRange i) n
@@ -545,8 +549,17 @@ makeDomainFree b@(A.DomainFull (A.TypedBindings r (Arg info (A.TBind _ [WithHidi
     _ -> b
 makeDomainFree b = b
 
+-- Christian Sattler, 2017-08-05, fixing #2669
+-- Both methods of ToConcrete (FieldAssignment' a) (FieldAssignment' c) need
+-- to be implemented, each in terms of the corresponding one of ToConcrete a c.
+-- This mirrors the instance ToConcrete (Arg a) (Arg c).
+-- The default implementations of ToConcrete are not valid semantically.
 instance ToConcrete a c => ToConcrete (FieldAssignment' a) (FieldAssignment' c) where
     toConcrete = traverse toConcrete
+
+    bindToConcrete (FieldAssignment name a) ret =
+      bindToConcrete a $ ret . FieldAssignment name
+
 
 -- Binder instances -------------------------------------------------------
 
@@ -561,7 +574,7 @@ instance ToConcrete A.TypedBindings [C.TypedBindings] where
     where
       recoverLabels :: Arg A.TypedBinding -> Arg C.TypedBinding -> [Arg C.TypedBinding]
       recoverLabels b cb
-        | getHiding b == NotHidden = [cb]   -- We don't care about labels for explicit args
+        | visible b = [cb]   -- We don't care about labels for explicit args
         | otherwise = traverse (recover (unArg b)) cb
 
       recover (A.TBind _ xs _) (C.TBind r ys e) = tbind r e (zipWith label xs ys)
@@ -591,7 +604,7 @@ instance ToConcrete LetBinding [C.Declaration] where
     bindToConcrete (LetBind i info x t e) ret =
         bindToConcrete x $ \x ->
         do (t,(e, [], [], [])) <- toConcrete (t, A.RHS e Nothing)
-           ret $ addInstanceB (getHiding info == Instance) $
+           ret $ addInstanceB (isInstance info) $
                [ C.TypeSig info x t
                , C.FunClause (C.LHS (C.IdentP $ C.QName x) [] [] [])
                              e C.NoWhere False
@@ -605,14 +618,14 @@ instance ToConcrete LetBinding [C.Declaration] where
       x' <- unqualify <$> toConcrete x
       modapp <- toConcrete modapp
       let r = getRange modapp
-          open = maybe DontOpen id $ minfoOpenShort i
-          dir  = maybe defaultImportDir{ importDirRange = r } id $ minfoDirective i
+          open = fromMaybe DontOpen $ minfoOpenShort i
+          dir  = fromMaybe defaultImportDir{ importDirRange = r } $ minfoDirective i
       -- This is no use since toAbstract LetDefs is in localToAbstract.
       local (openModule' x dir id) $
         ret [ C.ModuleMacro (getRange i) x' modapp open dir ]
     bindToConcrete (LetOpen i x _) ret = do
       x' <- toConcrete x
-      let dir = maybe defaultImportDir id $ minfoDirective i
+      let dir = fromMaybe defaultImportDir $ minfoDirective i
       local (openModule' x dir restrictPrivate) $
             ret [ C.Open (getRange i) x' dir ]
     bindToConcrete (LetDeclaredVariable _) ret =
@@ -794,8 +807,8 @@ instance ToConcrete A.Declaration [C.Declaration] where
 
   toConcrete (A.Import i x _) = do
     x <- toConcrete x
-    let open = maybe DontOpen id $ minfoOpenShort i
-        dir  = maybe defaultImportDir id $ minfoDirective i
+    let open = fromMaybe DontOpen $ minfoOpenShort i
+        dir  = fromMaybe defaultImportDir $ minfoDirective i
     return [ C.Import (getRange i) x Nothing open dir]
 
   toConcrete (A.Pragma i p)     = do

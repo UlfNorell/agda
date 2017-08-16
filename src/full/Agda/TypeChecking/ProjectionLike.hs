@@ -80,8 +80,9 @@ import Agda.TypeChecking.DropArgs
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
-import Agda.Utils.Size
 import Agda.Utils.Permutation
+import Agda.Utils.Pretty ( prettyShow )
+import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -170,16 +171,18 @@ elimView loneProjToLambda v = do
 -- | Which @Def@types are eligible for the principle argument
 --   of a projection-like function?
 eligibleForProjectionLike :: QName -> TCM Bool
-eligibleForProjectionLike d = do
-  defn <- theDef <$> getConstInfo d
-  return $ case defn of
+eligibleForProjectionLike d = eligible . theDef <$> getConstInfo d
+  where
+  eligible = \case
     Datatype{} -> True
     Record{}   -> True
     Axiom{}    -> True
     Function{}    -> False
     Primitive{}   -> False
     Constructor{} -> __IMPOSSIBLE__
-    AbstractDefn  -> False
+    AbstractDefn d -> eligible d
+      -- Andreas, 2017-08-14, issue #2682:
+      -- Abstract records still export the projections.
       -- Andreas, 2016-10-11 AIM XXIV
       -- Projection-like at abstract types violates the parameter reconstructibility property.
       -- See test/Fail/AbstractTypeProjectionLike.
@@ -220,7 +223,7 @@ eligibleForProjectionLike d = do
 makeProjection :: QName -> TCM ()
 makeProjection x = -- if True then return () else do
  inTopContext $ do
-  -- reportSLn "tc.proj.like" 30 $ "Considering " ++ show x ++ " for projection likeness"
+  reportSLn "tc.proj.like" 70 $ "Considering " ++ prettyShow x ++ " for projection likeness"
   defn <- getConstInfo x
   let t = defType defn
   reportSDoc "tc.proj.like" 20 $ sep

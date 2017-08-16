@@ -28,7 +28,7 @@ instance MentionsMeta Term where
 instance MentionsMeta a => MentionsMeta (Substitution' a) where
   mentionsMeta x rho = case rho of
     IdS              -> False
-    EmptyS           -> False
+    EmptyS _         -> False
     t :# rho         -> mentionsMeta x (t, rho)
     Strengthen _ rho -> mentionsMeta x rho
     Wk n rho         -> mentionsMeta x rho

@@ -22,7 +22,6 @@ import Agda.Syntax.Position
 import Agda.Syntax.Translation.InternalToAbstract
 
 import Agda.TypeChecking.CompiledClause
-import Agda.TypeChecking.Datatypes ( getConHead )
 import Agda.TypeChecking.DropArgs
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Level
@@ -117,9 +116,9 @@ quotingKit = do
       t !@! u = pure t @@ pure u
 
       quoteHiding :: Hiding -> ReduceM Term
-      quoteHiding Hidden    = pure hidden
-      quoteHiding Instance  = pure instanceH
-      quoteHiding NotHidden = pure visible
+      quoteHiding Hidden     = pure hidden
+      quoteHiding Instance{} = pure instanceH
+      quoteHiding NotHidden  = pure visible
 
       quoteRelevance :: Relevance -> ReduceM Term
       quoteRelevance Relevant   = pure relevant
@@ -128,7 +127,7 @@ quotingKit = do
       quoteRelevance Forced{}   = pure relevant
 
       quoteArgInfo :: ArgInfo -> ReduceM Term
-      quoteArgInfo (ArgInfo h r _ _) = arginfo !@ quoteHiding h @@ quoteRelevance r
+      quoteArgInfo (ArgInfo h r _) = arginfo !@ quoteHiding h @@ quoteRelevance r
 
       quoteLit :: Literal -> ReduceM Term
       quoteLit l@LitNat{}    = litNat    !@! Lit l
@@ -260,8 +259,10 @@ quotingKit = do
             agdaDefinitionFunDef !@ quoteList quoteClause cs
           Datatype{dataPars = np, dataCons = cs} ->
             agdaDefinitionDataDef !@! quoteNat (fromIntegral np) @@ quoteList (pure . quoteName) cs
-          Record{recConHead = c} ->
-            agdaDefinitionRecordDef !@! quoteName (conName c)
+          Record{recConHead = c, recFields = fs} ->
+            agdaDefinitionRecordDef
+              !@! quoteName (conName c)
+              @@ quoteList (quoteArg (pure . quoteName)) fs
           Axiom{}       -> pure agdaDefinitionPostulate
           AbstractDefn{}-> pure agdaDefinitionPostulate
           Primitive{primClauses = cs} | not $ null cs ->

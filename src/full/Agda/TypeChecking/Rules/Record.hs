@@ -35,6 +35,7 @@ import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl (checkDecl)
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 
 #include "undefined.h"
@@ -93,11 +94,6 @@ checkRecDef i name ind eta con ps contel fields =
       -- compute the field telescope (does not include record parameters)
       let TelV ftel _ = telView' contype
 
-          -- A record is irrelevant if all of its fields are.
-          -- In this case, the associated module parameter will be irrelevant.
-          -- See issue 392.
-          recordRelevance = minimum $ Irrelevant : (map getRelevance $ telToList ftel)
-
       -- Compute correct type of constructor
 
       -- t = tel -> t0 where t0 must be a sort s
@@ -149,6 +145,15 @@ checkRecDef i name ind eta con ps contel fields =
           -- haveEta      = maybe (Inferred $ conInduction == Inductive && etaenabled) Specified eta
           con = ConHead conName conInduction $ map unArg fs
 
+          -- A record is irrelevant if all of its fields are.
+          -- In this case, the associated module parameter will be irrelevant.
+          -- See issue 392.
+          -- Unless it's been declared coinductive or no-eta-equality (#2607).
+          recordRelevance
+            | eta          == Just False  = Relevant
+            | conInduction == CoInductive = Relevant
+            | otherwise                   = minimum $ Irrelevant : (map getRelevance $ telToList ftel)
+
       -- Andreas, 2017-01-26, issue #2436
       -- Disallow coinductive records with eta-equality
       when (conInduction == CoInductive && etaEqualityToBool haveEta == True) $ do
@@ -157,7 +162,7 @@ checkRecDef i name ind eta con ps contel fields =
               , text "If you must, use pragma"
               , text "{-# ETA" <+> prettyTCM name <+> text "#-}"
               ]
-      reportSDoc "tc.rec" 30 $ text "record constructor is " <+> text (show con)
+      reportSDoc "tc.rec" 30 $ text "record constructor is " <+> prettyTCM con
 
       -- Add the record definition.
 
@@ -259,7 +264,7 @@ checkRecDef i name ind eta con ps contel fields =
           [ text "record section:"
           , nest 2 $ sep
             [ prettyTCM m <+> (inTopContext . prettyTCM =<< getContextTelescope)
-            , fsep $ punctuate comma $ map (text . show . getName) fields
+            , fsep $ punctuate comma $ map (return . P.pretty . getName) fields
             ]
           ]
         reportSDoc "tc.rec.def" 15 $ nest 2 $ vcat
@@ -321,13 +326,14 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
       -- because then meta variables are created again.
       -- Instead, we take the field type t from the field telescope.
       reportSDoc "tc.rec.proj" 5 $ sep
-        [ text "checking projection" <+> text (show x)
+        [ text "checking projection" <+> prettyTCM x
         , nest 2 $ vcat
           [ text "top   =" <+> (inTopContext . prettyTCM =<< getContextTelescope)
           , text "tel   =" <+> (inTopContext . prettyTCM $ tel)
           , text "ftel1 =" <+> prettyTCM ftel1
           , text "t     =" <+> prettyTCM t
           , text "ftel2 =" <+> addContext ftel1 (underAbstraction_ ftel2 prettyTCM)
+          , text "abstr =" <+> (text . show) (Info.defAbstract info)
           ]
         ]
 
@@ -396,7 +402,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
             cpo    = if hasNamedCon then ConOCon else ConORec
             cpi    = ConPatternInfo (Just cpo) (Just $ argFromDom $ fmap snd rt)
             conp   = defaultArg $ ConP con cpi $
-                     [ Arg info $ unnamed $ varP "x" | Dom info _ <- telToList ftel ]
+                     [ Arg ai' $ unnamed $ varP "x" | Dom ai' _ <- telToList ftel ]
             body   = Just $ bodyMod $ var (size ftel2)
             cltel  = ftel
             clause = Clause { clauseLHSRange  = getRange info

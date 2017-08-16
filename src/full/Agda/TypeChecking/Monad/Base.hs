@@ -39,7 +39,7 @@ import Agda.Benchmarking (Benchmark, Phase)
 import Agda.Syntax.Concrete (TopLevelModuleName)
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete as C
-import qualified Agda.Syntax.Concrete.Definitions as D
+import Agda.Syntax.Concrete.Definitions (NiceDeclaration, DeclarationWarning)
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract (AllNames)
 import Agda.Syntax.Internal as I
@@ -63,7 +63,7 @@ import {-# SOURCE #-} Agda.Compiler.Backend
 -- import {-# SOURCE #-} Agda.Interaction.FindFile
 import Agda.Interaction.Options
 import Agda.Interaction.Response
-  (InteractionOutputCallback, defaultInteractionOutputCallback)
+  (InteractionOutputCallback, defaultInteractionOutputCallback, Response(..))
 import Agda.Interaction.Highlighting.Precise
   (CompressedFile, HighlightingInfo)
 
@@ -86,6 +86,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty hiding ((<>))
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Singleton
 import Agda.Utils.Functor
 
@@ -565,6 +566,7 @@ newtype ProblemId = ProblemId Nat
 -- ASR (28 December 2014). This instance is not used anymore (module
 -- the test suite) when reporting errors. See Issue 1293.
 
+-- This particular Show instance is ok because of the Num instance.
 instance Show ProblemId where
   show (ProblemId n) = show n
 
@@ -731,7 +733,7 @@ data Closure a = Closure
     deriving (Typeable, Data, Functor, Foldable)
 
 instance Show a => Show (Closure a) where
-  show cl = "Closure " ++ show (clValue cl)
+  show cl = "Closure { clValue = " ++ show (clValue cl) ++ " }"
 
 instance HasRange a => HasRange (Closure a) where
     getRange = getRange . clValue
@@ -824,22 +826,11 @@ instance TermLike Constraint where
       UnBlock _              -> __IMPOSSIBLE__  -- mempty     -- Not yet implemented
       Guarded c _            -> __IMPOSSIBLE__  -- foldTerm c -- Not yet implemented
       FindInScope _ _ cs     -> __IMPOSSIBLE__  -- Not yet implemented
-  traverseTerm f c  = __IMPOSSIBLE__ -- Not yet implemented
   traverseTermM f c = __IMPOSSIBLE__ -- Not yet implemented
 
 
 data Comparison = CmpEq | CmpLeq
-  deriving (Eq, Typeable, Data)
-
--- TODO: 'Show' should output Haskell-parseable representations.
--- The following instance is deprecated, and Pretty[TCM] should be used
--- instead. Later, simply derive Show for this type.
-
--- ASR (27 December 2014). This instance is not used anymore (module
--- the test suite) when reporting errors. See Issue 1293.
-instance Show Comparison where
-  show CmpEq  = "="
-  show CmpLeq = "=<"
+  deriving (Eq, Typeable, Data, Show)
 
 instance Pretty Comparison where
   pretty CmpEq  = text "="
@@ -847,12 +838,13 @@ instance Pretty Comparison where
 
 -- | An extension of 'Comparison' to @>=@.
 data CompareDirection = DirEq | DirLeq | DirGeq
-  deriving (Eq, Typeable)
+  deriving (Eq, Typeable, Show)
 
-instance Show CompareDirection where
-  show DirEq  = "="
-  show DirLeq = "=<"
-  show DirGeq = ">="
+instance Pretty CompareDirection where
+  pretty = text . \case
+    DirEq  -> "="
+    DirLeq -> "=<"
+    DirGeq -> ">="
 
 -- | Embed 'Comparison' into 'CompareDirection'.
 fromCmp :: Comparison -> CompareDirection
@@ -879,7 +871,7 @@ dirToCmp cont DirGeq = flip $ cont CmpLeq
 
 -- | A thing tagged with the context it came from.
 data Open a = OpenThing { openThingCtxIds :: [CtxId], openThing :: a }
-    deriving (Typeable, Data, Show, Functor)
+    deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 instance Decoration Open where
   traverseF f (OpenThing cxt x) = OpenThing cxt <$> f x
@@ -1146,8 +1138,11 @@ type Definitions = HashMap QName Definition
 type RewriteRuleMap = HashMap QName RewriteRules
 type DisplayForms = HashMap QName [LocalDisplayForm]
 
-data Section = Section { _secTelescope :: Telescope }
+newtype Section = Section { _secTelescope :: Telescope }
   deriving (Typeable, Data, Show)
+
+instance Pretty Section where
+  pretty = pretty . _secTelescope
 
 secTelescope :: Lens' Telescope Section
 secTelescope f s =
@@ -1215,6 +1210,22 @@ instance Free DisplayTerm where
   freeVars' (DDot v)           = freeVars' v
   freeVars' (DTerm v)          = freeVars' v
 
+instance Pretty DisplayTerm where
+  prettyPrec p v =
+    case v of
+      DTerm v          -> prettyPrec p v
+      DDot v           -> text "." P.<> prettyPrec 10 v
+      DDef f es        -> pretty f `pApp` es
+      DCon c _ vs      -> pretty (conName c) `pApp` map Apply vs
+      DWithApp h ws es ->
+        mparens (p > 0)
+          (sep [ pretty h
+              , nest 2 $ fsep [ text "|" <+> pretty w | w <- ws ] ])
+        `pApp` es
+    where
+      pApp d els = mparens (not (null els) && p > 9) $
+                   sep [d, nest 2 $ fsep (map (prettyPrec 10) els)]
+
 -- | By default, we have no display form.
 defaultDisplayForm :: QName -> [LocalDisplayForm]
 defaultDisplayForm c = []
@@ -1224,7 +1235,7 @@ defRelevance = argInfoRelevance . defArgInfo
 
 -- | Non-linear (non-constructor) first-order pattern.
 data NLPat
-  = PVar (Maybe CtxId) !Int [Arg Int]
+  = PVar !Int [Arg Int]
     -- ^ Matches anything (modulo non-linearity) that only contains bound
     --   variables that occur in the given arguments.
   | PWild
@@ -1255,7 +1266,7 @@ data RewriteRule = RewriteRule
                              --   where @≡@ is the rewrite relation.
   , rewContext :: Telescope  -- ^ @Γ@.
   , rewHead    :: QName      -- ^ @f@.
-  , rewPats    :: PElims     -- ^ @Γ ⊢ ps  : t@.
+  , rewPats    :: PElims     -- ^ @Γ ⊢ f ps : t@.
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
@@ -1355,6 +1366,13 @@ data Polarity
   | Invariant      -- ^ no information (mixed variance)
   | Nonvariant     -- ^ constant
   deriving (Typeable, Data, Show, Eq)
+
+instance Pretty Polarity where
+  pretty = text . \case
+    Covariant     -> "+"
+    Contravariant -> "-"
+    Invariant     -> "*"
+    Nonvariant    -> "_"
 
 -- | The backends are responsible for parsing their own pragmas.
 data CompilerPragma = CompilerPragma Range String
@@ -1458,7 +1476,7 @@ data FunctionFlag
 
 data Defn = Axiom
             -- ^ Postulate.
-          | AbstractDefn
+          | AbstractDefn Defn
             -- ^ Returned by 'getConstInfo' if definition is abstract.
           | Function
             { funClauses        :: [Clause]
@@ -1583,7 +1601,7 @@ instance Pretty Definition where
 
 instance Pretty Defn where
   pretty Axiom = text "Axiom"
-  pretty AbstractDefn = text "AbstractDefn"
+  pretty (AbstractDefn def) = text "AbstractDefn" <?> pretty def
   pretty Function{..} =
     text "Function {" <?> vcat
       [ text "funClauses      =" <?> vcat (map pretty funClauses)
@@ -1850,6 +1868,12 @@ data TermHead = SortHead
               | ConsHead QName
   deriving (Typeable, Data, Eq, Ord, Show)
 
+instance Pretty TermHead where
+  pretty = \case
+    SortHead  -> text "SortHead"
+    PiHead    -> text "PiHead"
+    ConsHead q-> text "ConsHead" <+> pretty q
+
 ---------------------------------------------------------------------------
 -- ** Mutual blocks
 ---------------------------------------------------------------------------
@@ -1890,7 +1914,7 @@ data Call = CheckClause Type A.SpineClause
           | CheckWithFunctionType A.Expr
           | CheckSectionApplication Range ModuleName A.ModuleApplication
           | ScopeCheckExpr C.Expr
-          | ScopeCheckDeclaration D.NiceDeclaration
+          | ScopeCheckDeclaration NiceDeclaration
           | ScopeCheckLHS C.QName C.Pattern
           | NoHighlighting
           | ModuleContents  -- ^ Interaction command: show module contents.
@@ -2382,8 +2406,9 @@ instance Free Candidate where
 -- | A non-fatal error is an error which does not prevent us from
 -- checking the document further and interacting with the user.
 
-data Warning =
-    TerminationIssue         [TerminationError]
+data Warning
+  = NicifierIssue            [DeclarationWarning]
+  | TerminationIssue         [TerminationError]
   | UnreachableClauses       QName [[NamedArg DeBruijnPattern]]
   | CoverageIssue            QName [(Telescope, [NamedArg DeBruijnPattern])]
   -- ^ `CoverageIssue f pss` means that `pss` are not covered in `f`
@@ -2491,6 +2516,7 @@ classifyWarning w = case w of
   UselessInline{}            -> AllWarnings
   GenericWarning{}           -> AllWarnings
   DeprecationWarning{}       -> AllWarnings
+  NicifierIssue{}            -> AllWarnings
   TerminationIssue{}         -> ErrorWarnings
   CoverageIssue{}            -> ErrorWarnings
   CoverageNoExactSplit{}     -> ErrorWarnings
@@ -2524,13 +2550,12 @@ data CallInfo = CallInfo
     -- ^ Range of the target function.
   , callInfoCall :: Closure Term
     -- ^ To be formatted representation of the call.
-  } deriving (Typeable, Data)
+  } deriving (Typeable, Data, Show)
 
 -- no Eq, Ord instances: too expensive! (see issues 851, 852)
 
 -- | We only 'show' the name of the callee.
-instance Show   CallInfo where show   = show . callInfoTarget
-instance Pretty CallInfo where pretty = text . show
+instance Pretty CallInfo where pretty = pretty . callInfoTarget
 instance AllNames CallInfo where allNames = singleton . callInfoTarget
 
 -- UNUSED, but keep!
@@ -2730,6 +2755,7 @@ data TypeError
           -- the include path says contains the module.
     -- Scope errors
         | BothWithAndRHS
+        | AbstractConstructorNotInScope A.QName
         | NotInScope [C.QName]
         | NoSuchModule C.QName
         | AmbiguousName C.QName [A.QName]
@@ -2749,8 +2775,8 @@ data TypeError
             -- ^ The expr was used in the right hand side of an implicit module
             --   definition, but it wasn't of the form @m Delta@.
         | NotAnExpression C.Expr
-        | NotAValidLetBinding D.NiceDeclaration
-        | NotValidBeforeField D.NiceDeclaration
+        | NotAValidLetBinding NiceDeclaration
+        | NotValidBeforeField NiceDeclaration
         | NothingAppliedToHiddenArg C.Expr
         | NothingAppliedToInstanceArg C.Expr
     -- Pattern synonym errors
@@ -2784,9 +2810,6 @@ data TypeError
 
 -- | Distinguish error message when parsing lhs or pattern synonym, resp.
 data LHSOrPatSyn = IsLHS | IsPatSyn deriving (Eq, Show)
-
--- instance Show TypeError where
---   show _ = "<TypeError>" -- TODO: more info?
 
 -- | Type-checking errors.
 
@@ -3163,7 +3186,15 @@ warning_ w =
 warning :: MonadTCM tcm => Warning -> tcm ()
 warning w = do
   tcwarn <- warning_ w
-  stTCWarnings %= (tcwarn :)
+  wmode <- optWarningMode <$> pragmaOptions
+  case wmode of
+    IgnoreAllWarnings -> case classifyWarning w of
+                           -- not allowed to ignore non-fatal errors
+                           ErrorWarnings -> raiseWarning tcwarn
+                           AllWarnings -> return ()
+    TurnIntoErrors -> typeError $ NonFatalErrors [tcwarn]
+    LeaveAlone -> raiseWarning tcwarn
+  where raiseWarning tcw = stTCWarnings %= (tcw :)
 
 -- | Running the type checking monad (most general form).
 {-# SPECIALIZE runTCM :: TCEnv -> TCState -> TCM a -> IO (a, TCState) #-}
@@ -3256,7 +3287,7 @@ instance KillRange CtxId where
   killRange (CtxId x) = killRange1 CtxId x
 
 instance KillRange NLPat where
-  killRange (PVar x y z) = killRange3 PVar x y z
+  killRange (PVar x y) = killRange2 PVar x y
   killRange (PWild)    = PWild
   killRange (PDef x y) = killRange2 PDef x y
   killRange (PLam x y) = killRange2 PLam x y
@@ -3288,7 +3319,7 @@ instance KillRange Defn where
   killRange def =
     case def of
       Axiom -> Axiom
-      AbstractDefn -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
+      AbstractDefn{} -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat ->
         killRange13 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat
       Datatype a b c d e f g h i j   -> killRange10 Datatype a b c d e f g h i j

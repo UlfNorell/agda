@@ -137,11 +137,7 @@ instance PatternFrom Term NLPat where
                  allBoundVars = IntSet.fromList (downFrom k)
                  ok = not (isIrrelevant r) ||
                       IntSet.fromList (map unArg bvs) == allBoundVars
-             -- Pattern variables are labeled with their context id, because they
-             -- can only be instantiated once they're no longer bound by the
-             -- context (see Issue 1652).
-             id <- (!! i') <$> getContextId
-             if ok then return (PVar (Just id) i' bvs) else done
+             if ok then return (PVar i bvs) else done
            Nothing -> done
       Lam i t  -> PLam i <$> patternFrom r k t
       Lit{}    -> done
@@ -201,11 +197,6 @@ runNLM nlm = do
     Left block -> return $ Left block
     Right _    -> return $ Right out
 
-traceSDocNLM :: VerboseKey -> Int -> TCM Doc -> NLM a -> NLM a
-traceSDocNLM k n doc = applyWhenVerboseS k n $ \ cont -> do
-  ReduceEnv env st <- liftRed askR
-  trace (show $ fst $ unsafePerformIO $ runTCM env st doc) cont
-
 matchingBlocked :: Blocked_ -> NLM ()
 matchingBlocked = throwError
 
@@ -221,8 +212,8 @@ tellSub r i v = do
       | otherwise       -> whenJustM (liftRed $ equal v v') matchingBlocked
 
 tellEq :: Telescope -> Telescope -> Term -> Term -> NLM ()
-tellEq gamma k u v =
-  traceSDocNLM "rewriting" 60 (sep
+tellEq gamma k u v = do
+  traceSDoc "rewriting" 60 (sep
                [ text "adding equality between" <+> addContext (gamma `abstract` k) (prettyTCM u)
                , text " and " <+> addContext k (prettyTCM v) ]) $ do
   nlmEqs %= (PostponedEquation k u v:)
@@ -265,7 +256,7 @@ instance Match a b => Match (Elim' a) (Elim' b) where
      (Apply p, Apply v) -> let r' = r `composeRelevance` getRelevance p
                            in  match r' gamma k p v
      (Proj _ x, Proj _ y) -> if x == y then return () else
-                             traceSDocNLM "rewriting" 80 (sep
+                             traceSDoc "rewriting" 80 (sep
                                [ text "mismatch between projections " <+> prettyTCM x
                                , text " and " <+> prettyTCM y ]) mzero
      (Apply{}, Proj{} ) -> __IMPOSSIBLE__
@@ -283,10 +274,10 @@ instance Match NLPat Sort where
     (p     , Type l) -> match Irrelevant gamma k p l
     _                -> matchingBlocked $ NotBlocked ReallyNotBlocked ()
 
-instance (Match a b, RaiseNLP a, Subst t2 b) => Match (Abs a) (Abs b) where
+instance (Match a b, Subst t1 a, Subst t2 b) => Match (Abs a) (Abs b) where
   match r gamma k (Abs n p) (Abs _ v) = match r gamma (ExtendTel dummyDom (Abs n k)) p v
   match r gamma k (Abs n p) (NoAbs _ v) = match r gamma (ExtendTel dummyDom (Abs n k)) p (raise 1 v)
-  match r gamma k (NoAbs n p) (Abs _ v) = match r gamma (ExtendTel dummyDom (Abs n k)) (raiseNLP 1 p) v
+  match r gamma k (NoAbs n p) (Abs _ v) = match r gamma (ExtendTel dummyDom (Abs n k)) (raise 1 p) v
   match r gamma k (NoAbs _ p) (NoAbs _ v) = match r gamma k p v
 
 instance Match NLPat Level where
@@ -298,47 +289,39 @@ instance Match NLPat Term where
     let n = size k
         b = void vb
         v = ignoreBlocking vb
-        prettyPat  = addContext (gamma `abstract` k) (prettyTCM (raisePatVars n p))
+        prettyPat  = addContext (gamma `abstract` k) (prettyTCM p)
         prettyTerm = addContext k (prettyTCM v)
-    traceSDocNLM "rewriting" 100 (sep
+    traceSDoc "rewriting" 100 (sep
       [ text "matching" <+> prettyPat
       , text "with" <+> prettyTerm]) $ do
     let yes = return ()
-        no msg =
-          traceSDocNLM "rewriting" 80 (sep
+        no msg = do
+          traceSDoc "rewriting" 80 (sep
             [ text "mismatch between" <+> prettyPat
             , text " and " <+> prettyTerm
-            , msg ]) $ matchingBlocked b
-        block b' =
-          traceSDocNLM "rewriting" 80 (sep
+            , msg ]) $ do
+          matchingBlocked b
+        block b' = do
+          traceSDoc "rewriting" 80 (sep
             [ text "matching blocked on meta"
-            , text (show b) ]) $ matchingBlocked (b `mappend` b')
+            , text (show b) ]) $ do
+          matchingBlocked (b `mappend` b')
     case p of
       PWild  -> yes
-      PVar id i bvs -> do
-        -- If the variable is still bound by the current context, we cannot
-        -- instantiate it so it has to match on the nose (see Issue 1652).
-        ctx <- zip <$> getContextNames <*> getContextId
-        traceSDocNLM "rewriting" 90 (text "Current context:" <+> (prettyTCM ctx)) $ do
-        cid <- getContextId
-        case (maybe Nothing (\i -> elemIndex i cid) id) of
-          Just j -> if v == Var (j+n) (map (Apply . fmap var) bvs)
-                    then tellSub r i (var j)
-                    else no (text $ "(CtxId = " ++ show id ++ ")")
-          Nothing -> do
-            let allowedVars :: IntSet
-                allowedVars = IntSet.fromList (map unArg bvs)
-                isBadVar :: Int -> Bool
-                isBadVar i = i < n && not (i `IntSet.member` allowedVars)
-                perm :: Permutation
-                perm = Perm n $ reverse $ map unArg $ bvs
-                tel :: Telescope
-                tel = permuteTel perm k
-            ok <- liftRed $ reallyFree isBadVar v
-            case ok of
-              Left b         -> block b
-              Right Nothing  -> no (text "")
-              Right (Just v) -> tellSub r i $ teleLam tel $ renameP __IMPOSSIBLE__ perm v
+      PVar i bvs -> do
+        let allowedVars :: IntSet
+            allowedVars = IntSet.fromList (map unArg bvs)
+            isBadVar :: Int -> Bool
+            isBadVar i = i < n && not (i `IntSet.member` allowedVars)
+            perm :: Permutation
+            perm = Perm n $ reverse $ map unArg $ bvs
+            tel :: Telescope
+            tel = permuteTel perm k
+        ok <- liftRed $ reallyFree isBadVar v
+        case ok of
+          Left b         -> block b
+          Right Nothing  -> no (text "")
+          Right (Just v) -> tellSub r (i-n) $ teleLam tel $ renameP __IMPOSSIBLE__ perm v
       PDef f ps -> do
         v <- liftRed $ constructorForm =<< unLevel v
         case ignoreSharing v of
@@ -355,7 +338,7 @@ instance Match NLPat Term where
                     match r gamma k qs vs
                   _ -> no (text "")
           Lam i u -> do
-            let pbody = PDef f (raiseNLP 1 ps ++ [Apply $ Arg i $ PTerm (var 0)])
+            let pbody = PDef f (raise 1 ps ++ [Apply $ Arg i $ PTerm (var 0)])
                 body  = absBody u
             match r gamma (ExtendTel dummyDom (Abs (absName u) k)) pbody body
           MetaV m es -> do
@@ -387,7 +370,7 @@ instance Match NLPat Term where
               match r gamma k qs vs
             _ -> no (text "")
         Lam info u -> do
-          let pbody = PBoundVar i (raiseNLP 1 ps ++ [Apply $ Arg info $ PTerm (var 0)])
+          let pbody = PBoundVar i (raise 1 ps ++ [Apply $ Arg info $ PTerm (var 0)])
               body  = absBody u
           match r gamma (ExtendTel dummyDom (Abs (absName u) k)) pbody body
         MetaV m es -> matchingBlocked $ Blocked m ()
@@ -426,7 +409,7 @@ reallyFree f v = do
 
 makeSubstitution :: Telescope -> Sub -> Substitution
 makeSubstitution gamma sub =
-  prependS __IMPOSSIBLE__ (map val [0 .. size gamma-1]) EmptyS
+  prependS __IMPOSSIBLE__ (map val [0 .. size gamma-1]) IdS
     where
       val i = case IntMap.lookup i sub of
                 Just (Irrelevant, v) -> Just $ dontCare v
@@ -435,7 +418,12 @@ makeSubstitution gamma sub =
 
 checkPostponedEquations :: Substitution -> PostponedEquations -> ReduceM (Maybe Blocked_)
 checkPostponedEquations sub eqs = forM' eqs $
-  \ (PostponedEquation k lhs rhs) -> equal (applySubst (liftS (size k) sub) lhs) rhs
+  \ (PostponedEquation k lhs rhs) -> do
+      let lhs' = applySubst (liftS (size k) sub) lhs
+      traceSDoc "rewriting" 60 (sep
+        [ text "checking postponed equality between" , addContext k (prettyTCM lhs')
+        , text " and " , addContext k (prettyTCM rhs) ]) $ do
+      equal lhs' rhs
 
 -- main function
 nonLinMatch :: (Match a b) => Telescope -> a -> b -> ReduceM (Either Blocked_ Substitution)
@@ -447,10 +435,10 @@ nonLinMatch gamma p v = do
     let sub = makeSubstitution gamma $ s^.nlmSub
         eqs = s^.nlmEqs
     traceSDoc "rewriting" 90 (text $ "sub = " ++ show sub) $ do
-      ok <- checkPostponedEquations sub eqs
-      case ok of
-        Nothing -> return $ Right sub
-        Just b  -> no "checking of postponed equations" b
+    ok <- checkPostponedEquations sub eqs
+    case ok of
+      Nothing -> return $ Right sub
+      Just b  -> no "checking of postponed equations" b
 
 -- | Untyped βη-equality, does not handle things like empty record types.
 --   Returns `Nothing` if the terms are equal, or `Just b` if the terms are not
@@ -465,56 +453,14 @@ equal u v = do
       block = caseMaybe (headMaybe metas)
                 (NotBlocked ReallyNotBlocked ())
                 (\m -> Blocked m ())
-  if ok then return Nothing else
+  if ok then return Nothing else do
     traceSDoc "rewriting" 80 (sep
       [ text "mismatch between " <+> prettyTCM u
       , text " and " <+> prettyTCM v
-      ]) $ return $ Just block
+      ]) $ do
+    return $ Just block
 
 -- | Normalise the given term but also preserve blocking tags
 --   TODO: implement a more efficient version of this.
 normaliseB' :: (Reduce t, Normalise t) => t -> ReduceM (Blocked t)
 normaliseB' = normalise' >=> reduceB'
-
--- | Raise (bound) variables in a NLPat
-
-class RaiseNLP a where
-  raiseNLPFrom :: Int -> Int -> a -> a
-
-  raiseNLP :: Int -> a -> a
-  raiseNLP = raiseNLPFrom 0
-
-instance RaiseNLP a => RaiseNLP [a] where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
-
-instance RaiseNLP a => RaiseNLP (Maybe a) where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
-
-instance RaiseNLP a => RaiseNLP (Arg a) where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
-
-instance RaiseNLP a => RaiseNLP (Elim' a) where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
-
-instance RaiseNLP a => RaiseNLP (Dom a) where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
-
-instance RaiseNLP NLPType where
-  raiseNLPFrom c k (NLPType l a) =
-    NLPType (raiseNLPFrom c k l) (raiseNLPFrom c k a)
-
-instance RaiseNLP a => RaiseNLP (Abs a) where
-  raiseNLPFrom c k (Abs i p)   = Abs i   $ raiseNLPFrom (c+1) k p
-  raiseNLPFrom c k (NoAbs i p) = NoAbs i $ raiseNLPFrom c     k p
-
-instance RaiseNLP NLPat where
-  raiseNLPFrom c k p = case p of
-    PVar id i bvs -> let raise j = if j < c then j else j + k
-                     in PVar id i $ map (fmap raise) bvs
-    PWild  -> p
-    PDef f ps -> PDef f $ raiseNLPFrom c k ps
-    PLam i q -> PLam i $ raiseNLPFrom c k q
-    PPi a b -> PPi (raiseNLPFrom c k a) (raiseNLPFrom c k b)
-    PBoundVar i ps -> let j = if i < c then i else i + k
-                      in PBoundVar j $ raiseNLPFrom c k ps
-    PTerm u -> PTerm $ raiseFrom c k u

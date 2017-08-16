@@ -5,14 +5,14 @@ module Agda.TypeChecking.CompiledClause.Match where
 import Control.Applicative
 import Control.Monad.Reader (asks)
 
-import Data.List
+import qualified Data.List as List
 import qualified Data.Map as Map
 
 import Agda.Syntax.Internal
 import Agda.Syntax.Common
 
 import Agda.TypeChecking.CompiledClause
-import Agda.TypeChecking.Monad hiding (reportSDoc, reportSLn)
+import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Reduce.Monad as RedM
@@ -96,7 +96,7 @@ match' ((c, es, patch) : stack) = do
 
       -- splitting on the @n@th elimination
       Case (Arg _ n) bs -> do
-        case genericSplitAt n es of
+        case splitAt n es of
           -- if the @n@th elimination is not supplied, no match
           (_, []) -> no (NotBlocked Underapplied) es
           -- if the @n@th elimination is @e0@
@@ -174,6 +174,7 @@ match' [] = {- new line here since __IMPOSSIBLE__ does not like the ' in match' 
     pds <- getPartialDefs
     if f `elem` pds
     then return (NoReduction $ NotBlocked MissingClauses [])
-    else traceSLn "impossible" 10
-           ("Incomplete pattern matching when applying " ++ show f)
-           __IMPOSSIBLE__
+    else do
+      traceSLn "impossible" 10
+        ("Incomplete pattern matching when applying " ++ show f)
+        __IMPOSSIBLE__

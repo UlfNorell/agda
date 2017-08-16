@@ -8,7 +8,6 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State
 
-import Data.List hiding (sort)
 import qualified Data.List as List
 import Data.Traversable hiding (mapM, sequence)
 
@@ -30,7 +29,7 @@ import Agda.TypeChecking.Constraints
 import {-# SOURCE #-} Agda.TypeChecking.CheckInternal (infer)
 import Agda.TypeChecking.Errors
 import Agda.TypeChecking.Free
-import Agda.TypeChecking.Datatypes (getConType)
+import Agda.TypeChecking.Datatypes (getConType, getFullyAppliedConType)
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Injectivity
@@ -524,6 +523,7 @@ compareAtom cmp t m n =
             (Def f es, Def f' es') ->
               unlessM (bothAbsurd f f') $ do
                 trySizeUniv cmp t m n f es f' es'
+            -- Due to eta-expansion, these constructors are fully applied.
             (Con x ci xArgs, Con y _ yArgs)
                 | x == y -> do
                     -- Get the type of the constructor instantiated to the datatype parameters.
@@ -546,7 +546,7 @@ compareAtom cmp t m n =
                 -- to solve left-over constraints.
                 -- Thus, instead of crashing, just give up gracefully.
                 patternViolation
-          maybe impossible return =<< getConType c t
+          maybe impossible (return . snd) =<< getFullyAppliedConType c t
         equalFun t1 t2 = case (ignoreSharing t1, ignoreSharing t2) of
           (Pi dom1 b1, Pi dom2 b2) -> do
             verboseBracket "tc.conv.fun" 15 "compare function types" $ do
@@ -584,7 +584,7 @@ compareDom :: Free c
   -> TCM ()     -- ^ Continuation if comparison is successful.
   -> TCM ()
 compareDom cmp dom1@(Dom i1 a1) dom2@(Dom i2 a2) b1 b2 errH errR cont
-  | getHiding dom1 /= getHiding dom2 = errH
+  | not (sameHiding dom1 dom2) = errH
   -- Andreas 2010-09-21 compare r1 and r2, but ignore forcing annotations!
   | not $ compareRelevance cmp (ignoreForced $ getRelevance dom1)
                                (ignoreForced $ getRelevance dom2) = errR
@@ -645,8 +645,14 @@ antiUnify pid a u v = do
     (Var i us, Var j vs) | i == j -> maybeGiveUp $ do
       a <- typeOfBV i
       antiUnifyElims pid a (var i) us vs
+    -- Andreas, 2017-07-27:
+    -- It seems that nothing guarantees here that the constructors are fully
+    -- applied!?  Thus, @a@ could be a function type and we need the robust
+    -- @getConType@ here.
+    -- (Note that @patternViolation@ swallows exceptions coming from @getConType@
+    -- thus, we would not see clearly if we used @getFullyAppliedConType@ instead.)
     (Con x ci us, Con y _ vs) | x == y -> maybeGiveUp $ do
-      a <- maybe patternViolation return =<< getConType x a
+      a <- maybe patternViolation (return . snd) =<< getConType x a
       antiUnifyElims pid a (Con x ci []) (map Apply us) (map Apply vs)
     (Def f us, Def g vs) | f == g, length us == length vs -> maybeGiveUp $ do
       a <- computeElimHeadType f us vs
@@ -1114,7 +1120,7 @@ leqLevel a b = liftTCM $ do
         -- remove subsumed
         -- Andreas, 2014-04-07: This is ok if we do not go back to equalLevel
         (as, bs)
-          | not $ null subsumed -> leqView (Max $ as \\ subsumed) (Max bs)
+          | not $ null subsumed -> leqView (Max $ as List.\\ subsumed) (Max bs)
           where
             subsumed = [ a | a@(Plus m l) <- as, n <- findN l, m <= n ]
             -- @findN a@ finds the unique(?) term @Plus n a@ in @bs@, if any.

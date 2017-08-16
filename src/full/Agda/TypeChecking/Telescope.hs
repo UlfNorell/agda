@@ -10,7 +10,7 @@ import Control.Monad (unless, guard)
 import Data.Foldable (forM_)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
-import Data.List hiding (null)
+import qualified Data.List as List
 import Data.Maybe
 
 import Agda.Syntax.Common
@@ -34,33 +34,6 @@ import qualified Agda.Utils.VarSet as VarSet
 
 #include "undefined.h"
 import Agda.Utils.Impossible
-
-data OutputTypeName
-  = OutputTypeName QName
-  | OutputTypeVar
-  | OutputTypeNameNotYetKnown
-  | NoOutputTypeName
-
--- | Strips all Pi's and return the head definition name, if possible.
-getOutputTypeName :: Type -> TCM OutputTypeName
-getOutputTypeName t = do
-  TelV tel t' <- telView t
-  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ v ->
-    case ignoreSharing v of
-      -- Possible base types:
-      Def n _  -> return $ OutputTypeName n
-      Sort{}   -> return NoOutputTypeName
-      Var n _  -> return OutputTypeVar
-      -- Not base types:
-      Con{}    -> __IMPOSSIBLE__
-      Lam{}    -> __IMPOSSIBLE__
-      Lit{}    -> __IMPOSSIBLE__
-      Level{}  -> __IMPOSSIBLE__
-      MetaV{}  -> __IMPOSSIBLE__
-      Pi{}     -> __IMPOSSIBLE__
-      Shared{} -> __IMPOSSIBLE__
-      Let{}    -> __IMPOSSIBLE__
-      DontCare{} -> __IMPOSSIBLE__
 
 -- | Flatten telescope: (Γ : Tel) -> [Type Γ]
 flattenTel :: Telescope -> [Dom Type]
@@ -225,7 +198,7 @@ splitTelescopeExact is tel = guard ok $> SplitTel tel1 tel2 perm
 
     ok    = all (<n) is && checkDependencies IntSet.empty is
 
-    isC   = downFrom n \\ is
+    isC   = downFrom n List.\\ is
 
     perm  = Perm n $ map (n-1-) $ is ++ isC
 
@@ -269,7 +242,7 @@ instantiateTelescope tel k u = guard ok $> (tel', sigma, rho)
     rho   = reverseP perm  -- works on de Bruijn levels
 
     u1    = renameP __IMPOSSIBLE__ perm u -- Γ' ⊢ u1 : A'
-    us    = map (\i -> fromMaybe (DotP u1) (deBruijnVar <$> findIndex (i ==) is)) [ 0 .. n-1 ]
+    us    = map (\i -> fromMaybe (DotP u1) (deBruijnVar <$> List.findIndex (i ==) is)) [ 0 .. n-1 ]
     sigma = us ++# raiseS (n-1)
 
     ts1   = permute rho $ applyPatSubst sigma ts0
@@ -303,7 +276,7 @@ expandTelescopeVar gamma k delta c = (tel', rho)
 
     tel'        = gamma1 `abstract` (delta `abstract` gamma2')
 
-
+-- | Gather leading Πs of a type in a telescope.
 telView :: Type -> TCM TelView
 telView = telViewUpTo (-1)
 
@@ -367,9 +340,42 @@ piApply1 t v = do
   (_, b) <- mustBePi t
   return $ absApp b v
 
+-- | Compute type arity
+typeArity :: Type -> TCM Nat
+typeArity t = do
+  TelV tel _ <- telView t
+  return (size tel)
+
 ---------------------------------------------------------------------------
 -- * Instance definitions
 ---------------------------------------------------------------------------
+
+data OutputTypeName
+  = OutputTypeName QName
+  | OutputTypeVar
+  | OutputTypeNameNotYetKnown
+  | NoOutputTypeName
+
+-- | Strips all Pi's and return the head definition name, if possible.
+getOutputTypeName :: Type -> TCM OutputTypeName
+getOutputTypeName t = do
+  TelV tel t' <- telView t
+  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ v ->
+    case ignoreSharing v of
+      -- Possible base types:
+      Def n _  -> return $ OutputTypeName n
+      Sort{}   -> return NoOutputTypeName
+      Var n _  -> return OutputTypeVar
+      -- Not base types:
+      Con{}    -> __IMPOSSIBLE__
+      Lam{}    -> __IMPOSSIBLE__
+      Lit{}    -> __IMPOSSIBLE__
+      Level{}  -> __IMPOSSIBLE__
+      MetaV{}  -> __IMPOSSIBLE__
+      Pi{}     -> __IMPOSSIBLE__
+      Shared{} -> __IMPOSSIBLE__
+      DontCare{} -> __IMPOSSIBLE__
+      Let{}      -> __IMPOSSIBLE__
 
 addTypedInstance :: QName -> Type -> TCM ()
 addTypedInstance x t = do

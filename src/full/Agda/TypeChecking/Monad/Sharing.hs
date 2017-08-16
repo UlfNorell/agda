@@ -4,12 +4,13 @@ module Agda.TypeChecking.Monad.Sharing where
 
 import Control.Applicative
 import Control.Monad.Reader
-import Data.List
+import qualified Data.List as List
 import Data.Function
 import Data.Traversable
 
 import Agda.Syntax.Internal
 import Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.Utils.Monad
 
@@ -43,7 +44,7 @@ updateSharedTermT f v =
 forceEqualTerms :: Term -> Term -> TCM ()
 forceEqualTerms u v =
   whenM (asks envAllowDestructiveUpdate) $
-  when (null $ (intersect `on` pointerChain) u v) $
+  when (null $ (List.intersect `on` pointerChain) u v) $
   case (u, v) of
     (Shared p, Shared q) | p > q -> update u v
     (_, Shared{})                -> update v u
@@ -56,5 +57,4 @@ forceEqualTerms u v =
         setPtr v p `seq` compressPointerChain u `seq` return ()
       where p = last $ pointerChain u
     update _ _ = __IMPOSSIBLE__
-    report x y = reportSLn "tc.ptr" 50 $ "setting " ++ show x ++ "\n     to " ++ show y
-
+    report u v = reportSLn "tc.ptr" 50 $ "setting " ++ show u ++ "\n     to " ++ show v

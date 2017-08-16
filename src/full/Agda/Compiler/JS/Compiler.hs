@@ -21,7 +21,7 @@ import Agda.Interaction.FindFile ( findFile, findInterfaceFile )
 import Agda.Interaction.Imports ( isNewerThan )
 import Agda.Interaction.Options ( optCompileDir )
 import Agda.Syntax.Common ( Nat, unArg, namedArg, NameId(..) )
-import Agda.Syntax.Concrete.Name ( projectRoot )
+import Agda.Syntax.Concrete.Name ( projectRoot , isNoName )
 import Agda.Syntax.Abstract.Name
   ( ModuleName(MName), QName,
     mnameToConcrete,
@@ -38,7 +38,8 @@ import Agda.TypeChecking.Substitute ( absBody, arity )
 import Agda.TypeChecking.Level ( reallyUnLevelView )
 import Agda.TypeChecking.Monad hiding (Global, Local)
 import Agda.TypeChecking.Monad.Builtin
-import Agda.TypeChecking.Monad.Options ( setCommandLineOptions, reportSLn )
+import Agda.TypeChecking.Monad.Debug ( reportSLn )
+import Agda.TypeChecking.Monad.Options ( setCommandLineOptions )
 import Agda.TypeChecking.Reduce ( instantiateFull, normalise )
 import Agda.TypeChecking.Substitute (TelV(..))
 import Agda.TypeChecking.Telescope
@@ -162,19 +163,18 @@ prefix :: [Char]
 prefix = "jAgda"
 
 jsMod :: ModuleName -> GlobalId
-jsMod m = GlobalId (prefix : map show (mnameToList m))
+jsMod m = GlobalId (prefix : map prettyShow (mnameToList m))
 
 jsFileName :: GlobalId -> String
 jsFileName (GlobalId ms) = intercalate "." ms ++ ".js"
 
 jsMember :: Name -> MemberId
-jsMember n =
+jsMember n
   -- Anonymous fields are used for where clauses,
   -- and they're all given the concrete name "_",
   -- so we disambiguate them using their name id.
-  case show n of
-    "_" -> MemberId ("_" ++ show (nameId n))
-    l   -> MemberId l
+  | isNoName n = MemberId ("_" ++ show (nameId n))
+  | otherwise  = MemberId $ prettyShow n
 
 -- Rather annoyingly, the anonymous construtor of a record R in module M
 -- is given the name M.recCon, but a named constructor C
@@ -339,7 +339,7 @@ definition' kit q d t ls = do
             (Apply (Lookup (Local (LocalId 0)) (last ls))
               [ Local (LocalId (np - i)) | i <- [0 .. np-1] ]))
 
-    AbstractDefn -> __IMPOSSIBLE__
+    AbstractDefn{} -> __IMPOSSIBLE__
   where
     ret = return . Just . Export ls
     plainJS = return . Just . Export ls . PlainJS
@@ -463,7 +463,7 @@ litqname q =
   Object $ Map.fromList
     [ (mem "id", Integer $ fromIntegral n)
     , (mem "moduleId", Integer $ fromIntegral m)
-    , (mem "name", String $ show q)
+    , (mem "name", String $ prettyShow q)
     , (mem "fixity", litfixity fx)]
   where
     mem = MemberId

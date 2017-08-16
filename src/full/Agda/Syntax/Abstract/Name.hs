@@ -271,7 +271,9 @@ instance NumHoles AmbiguousQName where
   numHoles (AmbQ qs) = numHoles $ fromMaybe __IMPOSSIBLE__ $ headMaybe qs
 
 ------------------------------------------------------------------------
--- * Show instances
+-- * Show instances (only for debug printing!)
+--
+-- | Use 'prettyShow' to print names to the user.
 ------------------------------------------------------------------------
 
 -- deriving instance Show Name
@@ -351,21 +353,30 @@ instance SetRange QName where
                    }
 
 instance SetRange ModuleName where
-  setRange r (MName ns) = MName (map (setRange r) ns)
+  setRange r (MName ns) = MName (zipWith setRange rs ns)
+    where
+      -- Put the range only on the last name. Otherwise
+      -- we get overlapping jump-to-definition links for all
+      -- the parts (See #2666).
+      rs = replicate (length ns - 1) noRange ++ [r]
 
 -- ** KillRange
 
 instance KillRange Name where
-  killRange (Name a b c d) = killRange4 Name a b c d
-  -- killRange x = x { nameConcrete = killRange $ nameConcrete x
-  --                 -- Andreas, 2014-03-30
-  --                 -- An experiment: what happens if we preserve
-  --                 -- the range of the binding site, but kill all
-  --                 -- other ranges before serialization?
-  --                 -- Andreas, Makoto, 2014-10-18 AIM XX
-  --                 -- Kill all ranges in signature, including nameBindingSite.
-  --                 , nameBindingSite = noRange
-  --                 }
+  killRange (Name a b c d) =
+    (killRange4 Name a b c d) { nameBindingSite = c }
+    -- Andreas, 2017-07-25, issue #2649
+    -- Preserve the nameBindingSite for error message.
+    --
+    -- Older remarks:
+    --
+    -- Andreas, 2014-03-30
+    -- An experiment: what happens if we preserve
+    -- the range of the binding site, but kill all
+    -- other ranges before serialization?
+    --
+    -- Andreas, Makoto, 2014-10-18 AIM XX
+    -- Kill all ranges in signature, including nameBindingSite.
 
 instance KillRange ModuleName where
   killRange (MName xs) = MName $ killRange xs

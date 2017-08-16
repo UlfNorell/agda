@@ -203,7 +203,7 @@ instance EmbPrj Definition where
   value = valueN Defn
 
 instance EmbPrj NLPat where
-  icod_ (PVar a b c)    = icodeN 0 PVar a b c
+  icod_ (PVar a b)      = icodeN 0 PVar a b
   icod_ (PWild)         = icodeN 1 PWild
   icod_ (PDef a b)      = icodeN 2 PDef a b
   icod_ (PLam a b)      = icodeN 3 PLam a b
@@ -212,7 +212,7 @@ instance EmbPrj NLPat where
   icod_ (PTerm a)       = icodeN 6 PTerm a
 
   value = vcase valu where
-    valu [0, a, b, c] = valuN PVar a b c
+    valu [0, a, b]    = valuN PVar a b
     valu [1]          = valuN PWild
     valu [2, a, b]    = valuN PDef a b
     valu [3, a, b]    = valuN PLam a b
@@ -291,7 +291,7 @@ instance EmbPrj Defn where
   icod_ (Record      a b c d e f g h i j)       = icodeN 3 Record a b c d e f g h i j
   icod_ (Constructor a b c d e f g)             = icodeN 4 Constructor a b c d e f g
   icod_ (Primitive   a b c d)                   = icodeN 5 Primitive a b c d
-  icod_ AbstractDefn                            = __IMPOSSIBLE__
+  icod_ AbstractDefn{}                          = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0]                                     = valuN Axiom
@@ -397,7 +397,7 @@ instance EmbPrj a => EmbPrj (Builtin a) where
 
 instance EmbPrj a => EmbPrj (Substitution' a) where
   icod_ IdS              = icodeN' IdS
-  icod_ EmptyS           = icodeN 1 EmptyS
+  icod_ (EmptyS a)       = icodeN 1 EmptyS a
   icod_ (a :# b)         = icodeN 2 (:#) a b
   icod_ (Strengthen a b) = icodeN 3 Strengthen a b
   icod_ (Wk a b)         = icodeN 4 Wk a b
@@ -405,7 +405,7 @@ instance EmbPrj a => EmbPrj (Substitution' a) where
 
   value = vcase valu where
     valu []        = valuN IdS
-    valu [1]       = valuN EmptyS
+    valu [1, a]    = valuN EmptyS a
     valu [2, a, b] = valuN (:#) a b
     valu [3, a, b]    = valuN Strengthen a b
     valu [4, a, b] = valuN Wk a b

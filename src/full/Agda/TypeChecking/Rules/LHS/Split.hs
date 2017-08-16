@@ -10,8 +10,9 @@ import Control.Applicative hiding (empty)
 import Control.Monad.Trans ( lift )
 import Control.Monad.Trans.Maybe
 
+import Data.Either
 import Data.Maybe (fromMaybe)
-import Data.List hiding (null)
+import qualified Data.List as List
 import Data.Traversable hiding (mapM, sequence)
 import Data.Foldable (msum)
 
@@ -48,6 +49,7 @@ import Agda.TypeChecking.Telescope
 
 import Agda.TypeChecking.Rules.LHS.Problem
 
+import Agda.Utils.Either
 import Agda.Utils.Except (catchError)
 import Agda.Utils.Functor ((<.>))
 import Agda.Utils.Lens
@@ -57,9 +59,10 @@ import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
+import Agda.Utils.Pretty (prettyShow)
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 import Agda.Utils.Tuple
-import qualified Agda.Utils.Pretty as P
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -80,7 +83,7 @@ splitProblem ::
 splitProblem mf (Problem ps qs tel pr) = do
   lift $ do
     reportSLn "tc.lhs.split" 20 $ "initiating splitting"
-      ++ maybe "" ((" for definition " ++) . show) mf
+      ++ maybe "" ((" for definition " ++) . prettyShow) mf
     reportSDoc "tc.lhs.split" 30 $ sep
       [ nest 2 $ text "ps   =" <+> sep (map (P.parens <.> prettyA) ps)
       , nest 2 $ text "qs   =" <+> sep (map (P.parens <.> prettyTCM . namedArg) qs)
@@ -115,9 +118,9 @@ splitProblem mf (Problem ps qs tel pr) = do
         caseMaybeM (lift $ isRecordType $ unArg b) notRecord $ \(r, vs, def) -> case def of
           Record{ recFields = fs } -> do
             lift $ reportSDoc "tc.lhs.split" 20 $ sep
-              [ text $ "we are of record type r  = " ++ show r
+              [ text $ "we are of record type r  = " ++ prettyShow r
               , text   "applied to parameters vs = " <+> prettyTCM vs
-              , text $ "and have fields       fs = " ++ show fs
+              , text $ "and have fields       fs = " ++ prettyShow fs
               ]
             -- The record "self" is the definition f applied to the patterns
             let es = patternsToElims qs
@@ -145,7 +148,7 @@ splitProblem mf (Problem ps qs tel pr) = do
           [ text "Cannot eliminate type "
           , prettyTCM (unArg b)
           , text " with projection "
-          , if amb then text . show =<< dropTopLevelModule d else prettyTCM d
+          , if amb then text . prettyShow =<< dropTopLevelModule d else prettyTCM d
           ]
 
       -- | Pass 'True' unless last element of the list.
@@ -187,19 +190,19 @@ splitProblem mf (Problem ps qs tel pr) = do
             -- If the target is not a record type, that's an error.
             -- It could be a meta, but since we cannot postpone lhs checking, we crash here.
             lift $ reportSDoc "tc.lhs.split" 20 $ sep
-              [ text $ "proj                  d0 = " ++ show d0
-              , text $ "original proj         d  = " ++ show d
+              [ text $ "proj                  d0 = " ++ prettyShow d0
+              , text $ "original proj         d  = " ++ prettyShow d
               ]
             -- Get the field decoration.
             -- If the projection pattern name @d@ is not a field name,
             -- we have to try the next projection name.
             -- If this was not an ambiguous projection, that's an error.
-            argd <- maybe (ambErr $ wrongProj d amb) return $ find ((d ==) . unArg) fs
+            argd <- maybe (ambErr $ wrongProj d amb) return $ List.find ((d ==) . unArg) fs
             let ai' = setRelevance (getRelevance argd) ai
 
             -- Andreas, 2016-12-31, issue #2374:
             -- We can also disambiguate by hiding info.
-            unless (getHiding p == getHiding ai) $ ambErr $ wrongHiding d
+            unless (sameHiding p ai) $ ambErr $ wrongHiding d
 
             -- Andreas, 2016-12-31, issue #1976:
             -- Check parameters.
@@ -251,7 +254,7 @@ splitProblem mf (Problem ps qs tel pr) = do
         ]
 
       -- Andreas, 2016-06-30, issue #2075: need test here!
-      unless (getHiding p == getHiding ai) $ typeError WrongHidingInLHS
+      unless (sameHiding p ai) $ typeError WrongHidingInLHS
 
       -- Possible reinvokations:
       let -- 1. Redo this argument (after meta instantiation).
@@ -302,7 +305,7 @@ splitProblem mf (Problem ps qs tel pr) = do
             -- Subcase: a record type (d vs)
             Right (d, vs, def) -> do
               let np = recPars def
-              let (pars, ixs) = genericSplitAt np vs
+              let (pars, ixs) = splitAt np vs
               lift $ reportSDoc "tc.lhs.split" 10 $ vcat
                 [ sep [ text "splitting on"
                       , nest 2 $ fsep [ prettyA p, text ":", prettyTCM dom ]
@@ -384,24 +387,26 @@ splitProblem mf (Problem ps qs tel pr) = do
                     traceCall (CheckPattern p EmptyTel a) $ do  -- TODO: wrong telescope
                       -- Check that we construct something in the right datatype
                       c <- lift $ do
-                          cs' <- mapM canonicalName cs
+                          -- Andreas, 2017-08-13, issue #2686: ignore abstract constructors
+                          (cs1, cs') <- unzip . snd . partitionEithers <$> do
+                            forM cs $ \ c -> mapRight ((c,) . conName) <$> getConHead c
+                          when (null cs1) $ typeError $ AbstractConstructorNotInScope $ head cs
                           d'  <- canonicalName d
-                          let cons def = case theDef def of
-                                Datatype{dataCons = cs} -> cs
-                                Record{recConHead = c}      -> [conName c]
-                                _                       -> __IMPOSSIBLE__
-                          cs0 <- cons <$> getConstInfo d'
-                          case [ c | (c, c') <- zip cs cs', elem c' cs0 ] of
+                          cs0 <- (theDef <$> getConstInfo d') <&> \case
+                                Datatype{dataCons = cs0} -> cs0
+                                Record{recConHead = c0}  -> [conName c0]
+                                _ -> __IMPOSSIBLE__
+                          case [ c | (c, c') <- zip cs1 cs', elem c' cs0 ] of
                             [c]   -> do
                               -- If constructor pattern was ambiguous,
                               -- remember our choice for highlighting info.
                               when (length cs >= 2) $ storeDisambiguatedName c
                               return c
-                            []    -> typeError $ ConstructorPatternInWrongDatatype (head cs) d
-                            cs    -> -- if there are more than one we give up (they might have different types)
-                              typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d cs
+                            []    -> typeError $ ConstructorPatternInWrongDatatype (head cs1) d
+                            cs3   -> -- if there are more than one we give up (they might have different types)
+                              typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d cs3
 
-                      let (pars, ixs) = genericSplitAt np vs
+                      let (pars, ixs) = splitAt np vs
                       lift $ reportSDoc "tc.lhs.split" 10 $ vcat
                         [ sep [ text "splitting on"
                               , nest 2 $ fsep [ prettyA p, text ":", prettyTCM dom ]
@@ -458,9 +463,9 @@ checkParameters dc d pars = liftTCM $ do
     Def d0 es -> do -- compare parameters
       let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       reportSDoc "tc.lhs.split" 40 $
-        vcat [ nest 2 $ text "d                   =" <+> (text . show) d
-             , nest 2 $ text "d0 (should be == d) =" <+> (text . show) d0
-             , nest 2 $ text "dc                  =" <+> (text . show) dc
+        vcat [ nest 2 $ text "d                   =" <+> (text . prettyShow) d
+             , nest 2 $ text "d0 (should be == d) =" <+> (text . prettyShow) d0
+             , nest 2 $ text "dc                  =" <+> (text . prettyShow) dc
              , nest 2 $ text "vs                  =" <+> prettyTCM vs
              ]
       -- when (d0 /= d) __IMPOSSIBLE__ -- d could have extra qualification

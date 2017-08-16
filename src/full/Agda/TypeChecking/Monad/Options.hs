@@ -17,6 +17,7 @@ import System.FilePath
 import Agda.Syntax.Internal
 import Agda.Syntax.Common
 import Agda.Syntax.Concrete
+import {-# SOURCE #-} Agda.TypeChecking.Monad.Debug
 import {-# SOURCE #-} Agda.TypeChecking.Errors
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.State
@@ -292,31 +293,28 @@ showIrrelevantArguments = optShowIrrelevant <$> pragmaOptions
 
 -- | Switch on printing of implicit and irrelevant arguments.
 --   E.g. for reification in with-function generation.
+--
+--   Restores all 'PragmaOptions' after completion.
+--   Thus, do not attempt to make persistent 'PragmaOptions'
+--   changes in a `withShowAllArguments` bracket.
+
 withShowAllArguments :: TCM a -> TCM a
 withShowAllArguments = withShowAllArguments' True
 
 withShowAllArguments' :: Bool -> TCM a -> TCM a
-withShowAllArguments' yes ret = do
+withShowAllArguments' yes = withPragmaOptions $ \ opts ->
+  opts { optShowImplicit = yes, optShowIrrelevant = yes }
+
+-- | Change 'PragmaOptions' for a computation and restore afterwards.
+
+withPragmaOptions :: (PragmaOptions -> PragmaOptions) -> TCM a -> TCM a
+withPragmaOptions f cont = do
   opts <- pragmaOptions
-  let imp = optShowImplicit opts
-      irr = optShowIrrelevant opts
-  setPragmaOptions $ opts { optShowImplicit = yes, optShowIrrelevant = yes }
-  x <- ret
-  opts <- pragmaOptions
-  setPragmaOptions $ opts { optShowImplicit = imp, optShowIrrelevant = irr }
+  setPragmaOptions $ f opts
+  x <- cont
+  setPragmaOptions opts
   return x
 
-{- RETIRED, Andreas, 2012-04-30
-setShowImplicitArguments :: Bool -> TCM a -> TCM a
-setShowImplicitArguments showImp ret = do
-  opts <- pragmaOptions
-  let imp = optShowImplicit opts
-  setPragmaOptions $ opts { optShowImplicit = showImp }
-  x <- ret
-  opts <- pragmaOptions
-  setPragmaOptions $ opts { optShowImplicit = imp }
-  return x
--}
 
 ignoreInterfaces :: TCM Bool
 ignoreInterfaces = optIgnoreInterfaces <$> commandLineOptions
@@ -376,15 +374,6 @@ hasExactVerbosity k n =
 whenExactVerbosity :: MonadTCM tcm => VerboseKey -> Int -> tcm () -> tcm ()
 whenExactVerbosity k n = whenM $ liftTCM $ hasExactVerbosity k n
 
--- | Displays a debug message in a suitable way.
-{-# SPECIALIZE displayDebugMessage :: Int -> String -> TCM () #-}
-displayDebugMessage :: MonadTCM tcm
-  => Int     -- ^ The message's debug level.
-  -> String  -- ^ Message.
-  -> tcm ()
-displayDebugMessage n s = liftTCM $
-  appInteractionOutputCallback (Resp_RunningInfo n s)
-
 -- | Run a computation if a certain verbosity level is activated.
 --
 --   Precondition: The level must be non-negative.
@@ -393,33 +382,3 @@ displayDebugMessage n s = liftTCM $
 {-# SPECIALIZE verboseS :: MonadTCM tcm => VerboseKey -> Int -> tcm () -> tcm () #-}
 verboseS :: HasOptions m => VerboseKey -> Int -> m () -> m ()
 verboseS k n action = whenM (hasVerbosity k n) action
-
--- | Conditionally print debug string.
-{-# SPECIALIZE reportS :: VerboseKey -> Int -> String -> TCM () #-}
-reportS :: MonadTCM tcm => VerboseKey -> Int -> String -> tcm ()
-reportS k n s = liftTCM $ verboseS k n $ displayDebugMessage n s
-
--- | Conditionally println debug string.
-{-# SPECIALIZE reportSLn :: VerboseKey -> Int -> String -> TCM () #-}
-reportSLn :: MonadTCM tcm => VerboseKey -> Int -> String -> tcm ()
-reportSLn k n s = verboseS k n $
-  displayDebugMessage n (s ++ "\n")
-
--- | Conditionally render debug 'Doc' and print it.
-{-# SPECIALIZE reportSDoc :: VerboseKey -> Int -> TCM Doc -> TCM () #-}
-reportSDoc :: MonadTCM tcm => VerboseKey -> Int -> TCM Doc -> tcm ()
-reportSDoc k n d = liftTCM $ verboseS k n $ do
-  displayDebugMessage n . (++ "\n") . show =<< do
-    d `catchError` \ err ->
-      (\ s -> (sep $ map text
-                 [ "Printing debug message"
-                 , k  ++ ":" ++show n
-                 , "failed due to error:" ]) $$
-              (nest 2 $ text s)) <$> prettyError err
-
--- | Print brackets around debug messages issued by a computation.
-{-# SPECIALIZE verboseBracket :: VerboseKey -> Int -> String -> TCM a -> TCM a #-}
-verboseBracket :: MonadTCM tcm => VerboseKey -> Int -> String -> TCM a -> tcm a
-verboseBracket k n s m = liftTCM $ ifNotM (hasVerbosity k n) m $ {- else -} do
-  displayDebugMessage n $ "{ " ++ s ++ "\n"
-  m `finally` displayDebugMessage n "}\n"

@@ -8,6 +8,7 @@ module Agda.Interaction.Highlighting.Precise
   , NameKind(..)
   , OtherAspect(..)
   , Aspects(..)
+  , DefinitionSite(..)
   , File(..)
   , HighlightingInfo
     -- ** Creation
@@ -38,7 +39,7 @@ module Agda.Interaction.Highlighting.Precise
 import Agda.Utils.String
 import Agda.Utils.List
 import Data.Maybe
-import Data.List
+import qualified Data.List as List
 import Data.Function
 import Data.Semigroup
 import Control.Applicative ((<$>), (<*>))
@@ -121,14 +122,29 @@ data Aspects = Aspects
     -- something like that. It should contain useful information about
     -- the range (like the module containing a certain identifier, or
     -- the fixity of an operator).
-  , definitionSite :: Maybe (SC.TopLevelModuleName, Int)
+  , definitionSite :: Maybe DefinitionSite
     -- ^ The definition site of the annotated thing, if applicable and
     --   known. File positions are counted from 1.
   }
   deriving (Show, Typeable)
 
+data DefinitionSite = DefinitionSite
+  { defSiteModule :: SC.TopLevelModuleName
+      -- ^ The defining module.
+  , defSitePos    :: Int
+      -- ^ The file position in that module.
+  , defSiteHere   :: Bool
+      -- ^ Has this @DefinitionSite@ been created at the defining site of the name?
+  , defSiteAnchor :: Maybe String
+      -- ^ A pretty name for the HTML linking.
+  }
+  deriving (Show, Typeable)
+
+instance Eq DefinitionSite where
+  DefinitionSite m p _ _ == DefinitionSite m' p' _ _ = m == m' && p == p'
+
 instance Eq Aspects where
-  Aspects a o _ d == Aspects a' o' _ d' = (a, nub o, d) == (a', nub o', d')
+  Aspects a o _ d == Aspects a' o' _ d' = (a, List.nub o, d) == (a', List.nub o', d')
 
 -- | A 'File' is a mapping from file positions to meta information.
 --
@@ -164,7 +180,7 @@ several rs m = mconcat $ map (\r -> singleton r m) rs
 mergeAspects :: Aspects -> Aspects -> Aspects
 mergeAspects m1 m2 = Aspects
   { aspect       = (mplus `on` aspect) m1 m2
-  , otherAspects = nub $ ((++) `on` otherAspects) m1 m2
+  , otherAspects = List.nub $ ((++) `on` otherAspects) m1 m2
   , note         = case (note m1, note m2) of
       (Just n1, Just n2) -> Just $
          if n1 == n2
@@ -314,7 +330,7 @@ mergeC (CompressedFile f1) (CompressedFile f2) =
     )
     where
     [(a, ma), (b, _), (c, _), (d, md)] =
-      sortBy (compare `on` fst)
+      List.sortBy (compare `on` fst)
              [(from i1, m1), (to i1, m1), (from i2, m2), (to i2, m2)]
     fix = filter (not . empty . fst)
 

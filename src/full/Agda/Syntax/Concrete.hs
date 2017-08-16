@@ -216,7 +216,7 @@ data BoundName = BName
   , boundLabel  :: Name    -- ^ for implicit function types the label matters and can't be alpha-renamed
   , bnameFixity :: Fixity'
   }
-  deriving (Typeable, Data, Eq)
+  deriving (Typeable, Data, Eq, Show)
 
 mkBoundName_ :: Name -> BoundName
 mkBoundName_ x = mkBoundName x noFixity'
@@ -464,8 +464,8 @@ appView e =
   where
     vApp (AppView e es) arg = AppView e (es ++ [arg])
 
-    arg (HiddenArg   _ e) = setHiding Hidden   $ defaultArg e
-    arg (InstanceArg _ e) = setHiding Instance $ defaultArg e
+    arg (HiddenArg   _ e) = hide         $ defaultArg e
+    arg (InstanceArg _ e) = makeInstance $ defaultArg e
     arg e                 = defaultArg (unnamed e)
 
 {--------------------------------------------------------------------------

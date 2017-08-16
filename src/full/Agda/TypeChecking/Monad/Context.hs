@@ -10,7 +10,7 @@ import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.State
 
-import Data.List hiding (sort)
+import qualified Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Monoid
@@ -21,15 +21,17 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Scope.Monad (getLocalVars, setLocalVars)
 
 import Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Monad.Open
 import Agda.TypeChecking.Monad.Options
 
 import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.Functor
-import Agda.Utils.List ((!!!), downFrom)
-import Agda.Utils.Size
 import Agda.Utils.Lens
+import Agda.Utils.List ((!!!), downFrom)
+import Agda.Utils.Pretty
+import Agda.Utils.Size
 
 -- * Modifying the context
 
@@ -85,10 +87,11 @@ withModuleParameters mp ret = do
 
 -- | Apply a substitution to all module parameters.
 
-updateModuleParameters :: MonadTCM tcm => Substitution -> tcm a -> tcm a
+updateModuleParameters :: (MonadTCM tcm, MonadDebug tcm)
+                       => Substitution -> tcm a -> tcm a
 updateModuleParameters sub ret = do
   pm <- use stModuleParameters
-  let showMP pref mps = intercalate "\n" $
+  let showMP pref mps = List.intercalate "\n" $
         [ p ++ show m ++ " : " ++ show (mpSubstitution mp)
         | (p, (m, mp)) <- zip (pref : repeat (map (const ' ') pref))
                               (Map.toList mps)
@@ -114,7 +117,8 @@ updateModuleParameters sub ret = do
 -- | Since the @ModuleParamDict@ is relative to the current context,
 --   this function should be called everytime the context is extended.
 --
-weakenModuleParameters :: MonadTCM tcm => Nat -> tcm a -> tcm a
+weakenModuleParameters :: (MonadTCM tcm, MonadDebug tcm)
+                       => Nat -> tcm a -> tcm a
 weakenModuleParameters n = updateModuleParameters (raiseS n)
 
 -- | Get substitution @Γ ⊢ ρ : Γm@ where @Γ@ is the current context
@@ -125,9 +129,9 @@ weakenModuleParameters n = updateModuleParameters (raiseS n)
 --   This is ok for instance if we are outside module @m@
 --   (in which case we have to supply all module parameters to any
 --   symbol defined within @m@ we want to refer).
-getModuleParameterSub :: MonadTCM tcm => ModuleName -> tcm Substitution
+getModuleParameterSub :: (Functor m, ReadTCState m) => ModuleName -> m Substitution
 getModuleParameterSub m = do
-  r <- use stModuleParameters
+  r <- (^. stModuleParameters) <$> getTCState
   case Map.lookup m r of
     Nothing -> return IdS
     Just mp -> return $ mpSubstitution mp
@@ -165,8 +169,13 @@ class AddContext b where
 --   the current context, we need to weaken it when we
 --   extend the context.  This function takes care of that.
 --
-addContext' :: (MonadTCM tcm, AddContext b) => b -> tcm a -> tcm a
+addContext' :: (MonadTCM tcm, MonadDebug tcm, AddContext b)
+            => b -> tcm a -> tcm a
 addContext' cxt = addContext cxt . weakenModuleParameters (contextSize cxt)
+
+-- | Wrapper to tell 'addContext' not to 'unshadowName's. Used when adding a
+--   user-provided, but already type checked, telescope to the context.
+newtype KeepNames a = KeepNames a
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} AddContext a => AddContext [a] where
@@ -182,7 +191,10 @@ instance AddContext (Name, Dom Type) where
 
 instance AddContext (Dom (Name, Type)) where
   addContext = addContext . distributeF
-  -- addContext dom = addCtx (fst $ unDom dom) (snd <$> dom)
+  contextSize _ = 1
+
+instance AddContext (Dom (String, Type)) where
+  addContext = addContext . distributeF
   contextSize _ = 1
 
 instance AddContext ([Name], Dom Type) where
@@ -202,9 +214,10 @@ instance AddContext (String, Dom Type) where
     addCtx x dom ret
   contextSize _ = 1
 
-instance AddContext (Dom (String, Type)) where
-  addContext = addContext . distributeF
-  -- addContext dom = addContext (fst $ unDom dom, snd <$> dom)
+instance AddContext (KeepNames String, Dom Type) where
+  addContext (KeepNames s, dom) ret = do
+    x <- freshName_ s
+    addCtx x dom ret
   contextSize _ = 1
 
 instance AddContext (Dom Type) where
@@ -223,6 +236,12 @@ instance AddContext String where
   addContext s = addContext (s, dummyDom)
   contextSize _ = 1
 
+instance AddContext (KeepNames Telescope) where
+  addContext (KeepNames tel) ret = loop tel where
+    loop EmptyTel          = ret
+    loop (ExtendTel t tel) = underAbstraction' KeepNames t tel loop
+  contextSize (KeepNames tel) = size tel
+
 instance AddContext Telescope where
   addContext tel ret = loop tel where
     loop EmptyTel          = ret
@@ -236,10 +255,12 @@ dummyDom = defaultDom typeDontCare
 -- | Go under an abstraction.
 {-# SPECIALIZE underAbstraction :: Subst t a => Dom Type -> Abs a -> (a -> TCM b) -> TCM b #-}
 underAbstraction :: (Subst t a, MonadTCM tcm) => Dom Type -> Abs a -> (a -> tcm b) -> tcm b
-underAbstraction _ (NoAbs _ v) k = k v
-underAbstraction t a           k = do
-    x <- unshadowName =<< freshName_ (realName $ absName a)
-    addContext (x, t) $ k $ absBody a
+underAbstraction = underAbstraction' id
+
+underAbstraction' :: (Subst t a, MonadTCM tcm, AddContext (name, Dom Type)) =>
+                     (String -> name) -> Dom Type -> Abs a -> (a -> tcm b) -> tcm b
+underAbstraction' _ _ (NoAbs _ v) k = k v
+underAbstraction' wrap t a        k = addContext (wrap $ realName $ absName a, t) $ k $ absBody a
   where
     realName s = if isNoName s then "x" else argNameToString s
 
@@ -267,7 +288,7 @@ getContext = asks $ map ctxEntry . envContext
 -- | Get the size of the current context.
 {-# SPECIALIZE getContextSize :: TCM Nat #-}
 getContextSize :: (Applicative m, MonadReader TCEnv m) => m Nat
-getContextSize = genericLength <$> asks envContext
+getContextSize = length <$> asks envContext
 
 -- | Generate @[var (n - 1), ..., var 0]@ for all declarations in the context.
 {-# SPECIALIZE getContextArgs :: TCM Args #-}
@@ -302,7 +323,7 @@ lookupBV :: MonadReader TCEnv m => Nat -> m (Dom (Name, Type))
 lookupBV n = do
   ctx <- getContext
   let failure = fail $ "de Bruijn index out of scope: " ++ show n ++
-                       " in context " ++ show (map (fst . unDom) ctx)
+                       " in context " ++ prettyShow (map (fst . unDom) ctx)
   maybe failure (return . fmap (raise $ n + 1)) $ ctx !!! n
 
 {-# SPECIALIZE typeOfBV' :: Nat -> TCM (Dom Type) #-}
@@ -331,11 +352,11 @@ getVarInfo
 getVarInfo x =
     do  ctx <- getContext
         def <- asks envLetBindings
-        case findIndex ((==x) . fst . unDom) ctx of
+        case List.findIndex ((==x) . fst . unDom) ctx of
             Just n -> do
                 t <- typeOfBV' n
                 return (var n, t)
             _       ->
                 case Map.lookup x def of
                     Just vt -> getOpen vt
-                    _       -> fail $ "unbound variable " ++ show (nameConcrete x)
+                    _       -> fail $ "unbound variable " ++ prettyShow (nameConcrete x)

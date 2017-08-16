@@ -13,16 +13,20 @@ import Agda.Syntax.Internal
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Primitive (getBuiltinName)
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Free
 
 import Agda.Compiler.MAlonzo.Pragmas
+import Agda.Compiler.MAlonzo.Misc
+import Agda.Compiler.MAlonzo.Pretty
 
 import Agda.Utils.Except ( MonadError(catchError) )
-import Agda.Utils.Impossible
+import Agda.Utils.Pretty (prettyShow)
 
 #include "undefined.h"
+import Agda.Utils.Impossible
 
 type HaskellKind = String
 
@@ -39,7 +43,7 @@ hsUnit :: HaskellType
 hsUnit = "()"
 
 hsVar :: Name -> HaskellType
-hsVar x = "x" ++ concatMap encode (show x)
+hsVar x = "x" ++ concatMap encode (prettyShow x)
   where
     okChars = ['a'..'z'] ++ ['A'..'Y'] ++ "_'"
     encode 'Z' = "ZZ"
@@ -56,19 +60,29 @@ hsForall :: String -> HaskellType -> HaskellType
 hsForall x a = "(forall " ++ x ++ ". " ++ a ++ ")"
 
 notAHaskellType :: Type -> TCM a
-notAHaskellType a = do
-  err <- fsep $ pwords "The type" ++ [prettyTCM a] ++
-                pwords "cannot be translated to a Haskell type."
-  typeError $ GenericError $ show err
+notAHaskellType a = typeError . GenericDocError =<< do
+  fsep $ pwords "The type" ++ [prettyTCM a] ++
+         pwords "cannot be translated to a Haskell type."
+
 
 getHsType :: QName -> TCM HaskellType
 getHsType x = do
   d <- getHaskellPragma x
+  let namedType = do
+        -- For these builtin types, the type name (xhqn ...) refers to the
+        -- generated, but unused, datatype and not the primitive type.
+        nat  <- getBuiltinName builtinNat
+        int  <- getBuiltinName builtinInteger
+        bool <- getBuiltinName builtinBool
+        case () of
+          _ | Just x `elem` [nat, int] -> return "Integer"
+            | Just x == bool           -> return "Bool"
+            | otherwise                -> prettyShow <$> xhqn "T" x
   setCurrentRange d $ case d of
-    Just (HsType _ t)   -> return t
-    Just HsDefn{}       -> return hsUnit
-    Just (HsData _ t _) -> return t
-    _                   -> notAHaskellType (El Prop $ Def x [])
+    Just HsDefn{} -> return hsUnit
+    Just HsType{} -> namedType
+    Just HsData{} -> namedType
+    _             -> notAHaskellType (El Prop $ Def x [])
 
 getHsVar :: Nat -> TCM HaskellCode
 getHsVar i = hsVar <$> nameOfBV i
@@ -132,7 +146,7 @@ haskellType q = do
           Pi a b  -> underAbstraction a b $ \b -> hsForall <$> getHsVar 0 <*> underPars (n - 1) b
           _       -> __IMPOSSIBLE__
   ty <- underPars np $ defType def
-  reportSLn "tc.pragma.compile" 10 $ "Haskell type for " ++ show q ++ ": " ++ ty
+  reportSLn "tc.pragma.compile" 10 $ "Haskell type for " ++ prettyShow q ++ ": " ++ ty
   return ty
 
 checkConstructorCount :: QName -> [QName] -> [HaskellCode] -> TCM ()

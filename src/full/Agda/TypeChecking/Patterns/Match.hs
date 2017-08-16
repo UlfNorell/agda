@@ -19,7 +19,7 @@ import Agda.Syntax.Internal
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
-import Agda.TypeChecking.Monad hiding (reportSDoc)
+import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Datatypes
@@ -141,9 +141,9 @@ matchCopatterns ps vs = do
           , nest 2 $ text "ps =" <+> fsep (punctuate comma $ map (prettyTCM . namedArg) ps)
           , nest 2 $ text "vs =" <+> fsep (punctuate comma $ map prettyTCM vs)
           ]) $ do
-     -- Buggy, see issue 1124:
-     -- mapFst mconcat . unzip <$> zipWithM' (matchCopattern . namedArg) ps vs
-     foldMatch (matchCopattern . namedArg) ps vs
+  -- Buggy, see issue 1124:
+  -- mapFst mconcat . unzip <$> zipWithM' (matchCopattern . namedArg) ps vs
+  foldMatch (matchCopattern . namedArg) ps vs
 
 -- | Match a single copattern.
 matchCopattern :: DeBruijnPattern
@@ -167,10 +167,10 @@ matchPatterns ps vs = do
           , nest 2 $ text "ps =" <+> fsep (punctuate comma $ map (text . show) ps)
           , nest 2 $ text "vs =" <+> fsep (punctuate comma $ map prettyTCM vs)
           ]) $ do
-     -- Buggy, see issue 1124:
-     -- (ms,vs) <- unzip <$> zipWithM' (matchPattern . namedArg) ps vs
-     -- return (mconcat ms, vs)
-     foldMatch (matchPattern . namedArg) ps vs
+  -- Buggy, see issue 1124:
+  -- (ms,vs) <- unzip <$> zipWithM' (matchPattern . namedArg) ps vs
+  -- return (mconcat ms, vs)
+  foldMatch (matchPattern . namedArg) ps vs
 
 -- | Match a single pattern.
 matchPattern :: DeBruijnPattern

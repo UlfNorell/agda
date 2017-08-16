@@ -67,7 +67,6 @@ module Agda.TypeChecking.Reduce.Fast
 import Control.Applicative
 import Control.Monad.Reader
 
-import Data.List
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Traversable (traverse)
@@ -261,7 +260,7 @@ fastReduce allowNonTerminating v = do
   rwr <- optRewriting <$> pragmaOptions
   constInfo <- unKleisli $ \f -> do
     info <- getConstInfo f
-    rewr <- getRewriteRulesFor f
+    rewr <- instantiateRewriteRules =<< getRewriteRulesFor f
     compactDef z s pf info rewr
   ReduceM $ \ env -> reduceTm env (memoQName constInfo) allowNonTerminating rwr z s v
 
@@ -533,6 +532,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
           pds <- getPartialDefs
           if f `elem` pds
           then return (NoReduction $ NotBlocked MissingClauses es)
-          else traceSLn "impossible" 10
-                 ("Incomplete pattern matching when applying " ++ show f)
-                 __IMPOSSIBLE__
+          else do
+            traceSLn "impossible" 10
+              ("Incomplete pattern matching when applying " ++ show f)
+              __IMPOSSIBLE__

@@ -184,7 +184,7 @@ checkDecl d = setCurrentRange d $ do
                                       current <- asks envMutualBlock
                                       unless (Just blockId == current) $ do
                                         reportSLn "" 0 $ unlines
-                                          [ "mutual block id discrepancy for " ++ show x
+                                          [ "mutual block id discrepancy for " ++ prettyShow x
                                           , "  current    mut. bl. = " ++ show current
                                           , "  calculated mut. bl. = " ++ show blockId
                                           ]
@@ -297,7 +297,12 @@ revisitRecordPatternTranslation qs = do
   classify q = inConcreteOrAbstractMode q $ \ def -> do
     case theDef def of
       Record{ recEtaEquality' = Inferred True } -> return $ Just $ Left q
-      Function{ funCompiled = Just cc } -> return $ Just $ Right (q, cc)
+      Function
+        { funProjection = Nothing
+            -- Andreas, 2017-08-10, issue #2664:
+            -- Do not record pattern translate record projection definitions!
+        , funCompiled   = Just cc
+        } -> return $ Just $ Right (q, cc)
       _ -> return Nothing
 
 type FinalChecks = Maybe (TCM ())
@@ -334,7 +339,7 @@ unquoteTop xs e = do
 --   Precondition: name has been added to signature already.
 instantiateDefinitionType :: QName -> TCM ()
 instantiateDefinitionType q = do
-  reportSLn "tc.decl.inst" 20 $ "instantiating type of " ++ show q
+  reportSLn "tc.decl.inst" 20 $ "instantiating type of " ++ prettyShow q
   t  <- defType . fromMaybe __IMPOSSIBLE__ . lookupDefinition q <$> getSignature
   t' <- instantiateFull t
   modifySignature $ updateDefinition q $ updateDefType $ const t'
@@ -353,7 +358,7 @@ instantiateDefinitionType q = do
 -- --   Precondition: name has been added to signature already.
 -- instantiateDefinition :: QName -> TCM ()
 -- instantiateDefinition q = do
---   reportSLn "tc.decl.inst" 20 $ "instantiating " ++ show q
+--   reportSLn "tc.decl.inst" 20 $ "instantiating " ++ prettyShow q
 --   sig <- getSignature
 --   let def = fromMaybe __IMPOSSIBLE__ $ lookupDefinition q sig
 --   def <- instantiateFull def
@@ -468,12 +473,12 @@ checkInjectivity_ names = Bench.billTo [Bench.Injectivity] $ do
             modifySignature $ updateDefinition q $ updateTheDef $ const $
               d { funInv = inv }
           _ -> reportSLn "tc.inj.check" 20 $
-             show q ++ " is not verified as terminating, thus, not considered for injectivity"
+             prettyShow q ++ " is not verified as terminating, thus, not considered for injectivity"
       _ -> do
         abstr <- asks envAbstractMode
         reportSLn "tc.inj.check" 20 $
           "we are in " ++ show abstr ++ " and " ++
-             show q ++ " is abstract or not a function, thus, not considered for injectivity"
+             prettyShow q ++ " is abstract or not a function, thus, not considered for injectivity"
 
 -- | Check a set of mutual names for projection likeness.
 --
@@ -487,7 +492,7 @@ checkProjectionLikeness_ names = Bench.billTo [Bench.ProjectionLikeness] $ do
       -- Non-mutual definitions can be considered for
       -- projection likeness
       let ds = Set.toList names
-      reportSLn "tc.proj.like" 20 $ "checkDecl: checking projection-likeness of " ++ show ds
+      reportSLn "tc.proj.like" 20 $ "checkDecl: checking projection-likeness of " ++ prettyShow ds
       case ds of
         [d] -> do
           def <- getConstInfo d
@@ -496,7 +501,7 @@ checkProjectionLikeness_ names = Bench.billTo [Bench.ProjectionLikeness] $ do
           case theDef def of
             Function{} -> makeProjection (defName def)
             _          -> reportSLn "tc.proj.like" 25 $
-              show d ++ " is abstract or not a function, thus, not considered for projection-likeness"
+              prettyShow d ++ " is abstract or not a function, thus, not considered for projection-likeness"
         _ -> reportSLn "tc.proj.like" 25 $
                "mutual definitions are not considered for projection-likeness"
 
@@ -550,8 +555,8 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
         typeError $ TooManyPolarities x n
       let pols = map polFromOcc occs
       reportSLn "tc.polarity.pragma" 10 $
-        "Setting occurrences and polarity for " ++ show x ++ ":\n  " ++
-        show occs ++ "\n  " ++ show pols
+        "Setting occurrences and polarity for " ++ prettyShow x ++ ":\n  " ++
+        prettyShow occs ++ "\n  " ++ prettyShow pols
       return (occs, pols)
 
   -- Not safe. See Issue 330
@@ -764,21 +769,21 @@ checkModuleArity m tel args = check tel args
           y    = absName btel
           tel  = absBody btel in
       case (argInfoHiding info, argInfoHiding info', name) of
-        (Instance, NotHidden, _) -> check tel args0
-        (Instance, Hidden, _)    -> check tel args0
-        (Instance, Instance, Nothing) -> check tel args
-        (Instance, Instance, Just x)
-          | x == y                -> check tel args
-          | otherwise             -> check tel args0
-        (Hidden, NotHidden, _)    -> check tel args0
-        (Hidden, Instance, _)     -> check tel args0
-        (Hidden, Hidden, Nothing) -> check tel args
+        (Instance{}, NotHidden, _)        -> check tel args0
+        (Instance{}, Hidden, _)           -> check tel args0
+        (Instance{}, Instance{}, Nothing) -> check tel args
+        (Instance{}, Instance{}, Just x)
+          | x == y                        -> check tel args
+          | otherwise                     -> check tel args0
+        (Hidden, NotHidden, _)            -> check tel args0
+        (Hidden, Instance{}, _)           -> check tel args0
+        (Hidden, Hidden, Nothing)         -> check tel args
         (Hidden, Hidden, Just x)
-          | x == y                -> check tel args
-          | otherwise             -> check tel args0
-        (NotHidden, NotHidden, _) -> check tel args
-        (NotHidden, Hidden, _)    -> bad
-        (NotHidden, Instance, _)    -> bad
+          | x == y                        -> check tel args
+          | otherwise                     -> check tel args0
+        (NotHidden, NotHidden, _)         -> check tel args
+        (NotHidden, Hidden, _)            -> bad
+        (NotHidden, Instance{}, _)        -> bad
 
 -- | Check an application of a section (top-level function, includes @'traceCall'@).
 checkSectionApplication
@@ -805,7 +810,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     mfv <- getCurrentModuleFreeVars
     fv  <- getContextSize
     return (fv - mfv)
-  when (extraParams > 0) $ reportSLn "tc.mod.apply" 30 $ "Extra parameters to " ++ show m1 ++ ": " ++ show extraParams
+  when (extraParams > 0) $ reportSLn "tc.mod.apply" 30 $ "Extra parameters to " ++ prettyShow m1 ++ ": " ++ show extraParams
   -- Type-check the LHS (ptel) of the module macro.
   checkTelescope ptel $ \ ptel -> do
     -- We are now in the context @ptel@.
@@ -840,7 +845,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
       ]
     -- Andreas, 2014-04-06, Issue 1094:
     -- Add the section with well-formed telescope.
-    addContext aTel $ do
+    addContext (KeepNames aTel) $ do
       reportSDoc "tc.mod.apply" 80 $
         text "addSection" <+> prettyTCM m1 <+> (getContextTelescope >>= \ tel -> inTopContext (prettyTCM tel))
       addSection m1
@@ -852,7 +857,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     args <- instantiateFull $ vs ++ ts
     let n = size aTel
     etaArgs <- inTopContext $ addContext aTel getContextArgs
-    addContext' aTel $
+    addContext' (KeepNames aTel) $
       applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) copyInfo
 
 checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
@@ -872,7 +877,7 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
       -- Found last parameter: switch it to @Instance@.
       instFinal (ExtendTel (Dom info t) (Abs n EmptyTel)) =
                  ExtendTel (Dom ifo' t) (Abs n EmptyTel)
-        where ifo' = setHiding Instance info
+        where ifo' = makeInstance info
       -- Otherwise, keep searching for last parameter:
       instFinal (ExtendTel arg (Abs n tel)) =
                  ExtendTel arg (Abs n (instFinal tel))
@@ -893,7 +898,7 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
     -- , nest 2 $ text "args    =" <+> text (show args)
     ]
   when (tel == EmptyTel) $
-    typeError $ GenericError $ show (qnameToConcrete name) ++ " is not a parameterised section"
+    typeError $ GenericError $ prettyShow (qnameToConcrete name) ++ " is not a parameterised section"
 
   addContext' telInst $ do
     vs <- moduleParamsToApply $ qnameModule name
@@ -949,7 +954,7 @@ debugPrintDecl d = do
       case d of
         A.Section info mname tel ds -> do
           reportSLn "tc.decl" 45 $
-            "section " ++ show mname ++ " has "
+            "section " ++ prettyShow mname ++ " has "
               ++ show (length tel) ++ " parameters and "
               ++ show (length ds) ++ " declarations"
           reportSDoc "tc.decl" 45 $ prettyA $ A.Section info mname tel []

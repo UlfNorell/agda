@@ -12,7 +12,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
-import Data.List as List hiding (null)
+import qualified Data.List as List
 import qualified Data.Set as Set
 
 import Agda.Syntax.Internal
@@ -164,7 +164,7 @@ solveAwakeConstraints = solveAwakeConstraints' False
 
 solveAwakeConstraints' :: Bool -> TCM ()
 solveAwakeConstraints' force = do
-    verboseS "profile.constraints" 10 $ liftTCM $ tickMax "max-open-constraints" . genericLength =<< getAllConstraints
+    verboseS "profile.constraints" 10 $ liftTCM $ tickMax "max-open-constraints" . List.genericLength =<< getAllConstraints
     whenM ((force ||) . not <$> isSolvingConstraints) $ nowSolvingConstraints $ do
      -- solveSizeConstraints -- Andreas, 2012-09-27 attacks size constrs too early
      -- Ulf, 2016-12-06: Don't inherit problems here! Stored constraints
@@ -223,6 +223,10 @@ solveConstraint_ (UnBlock m)                =
       --
       -- already solved metavariables: should only happen for size
       -- metas (not sure why it does, Andreas?)
+      -- Andreas, 2017-07-11:
+      -- I think this is because the size solver instantiates
+      -- some metas with infinity but does not clean up the UnBlock constraints.
+      -- See also issue #2637.
       InstV{} -> return ()
       -- Open (whatever that means)
       Open -> __IMPOSSIBLE__

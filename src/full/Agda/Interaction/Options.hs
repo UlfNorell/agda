@@ -11,6 +11,7 @@ module Agda.Interaction.Options
     , OptionsPragma
     , Flag, OptM, runOptM, OptDescr(..), ArgDescr(..)
     , Verbosity
+    , WarningMode(..)
     , checkOpts
     , parseStandardOptions, parseStandardOptions'
     , parsePragmaOptions
@@ -35,11 +36,6 @@ module Agda.Interaction.Options
 import Control.Applicative
 import Control.Monad            ( (>=>), when )
 import Control.Monad.Trans
-
--- base-4.7 defines the Functor instances for OptDescr and ArgDescr
-#if !(MIN_VERSION_base(4,7,0))
-import Data.Orphans             ()
-#endif
 
 import Data.Either
 import Data.Maybe
@@ -91,6 +87,26 @@ type Verbosity = Trie String Int
 data IgnoreFlags = IgnoreFlags | RespectFlags
   deriving Eq
 
+-- Potentially turn harmless warnings into nothing, or errors
+-- (does not apply to non-fatal errors)
+data WarningMode = LeaveAlone | TurnIntoErrors | IgnoreAllWarnings
+  deriving (Show, Eq
+#if __GLASGOW_HASKELL__ <= 708
+           , Typeable
+#endif
+           )
+
+warningModes :: [ (String, WarningMode) ]
+warningModes =
+  [ (defaultWarningMode, LeaveAlone)
+  , ("ignore"          , IgnoreAllWarnings)
+  , ("error"           , TurnIntoErrors)
+  ]
+
+-- Don't forget to update
+--   doc/user-manual/tools/command-line-options.rst
+-- if you make changes to the command-line options!
+
 data CommandLineOptions = Options
   { optProgramName      :: String
   , optInputFile        :: Maybe FilePath
@@ -116,6 +132,9 @@ data CommandLineOptions = Options
   , optGenerateHTML     :: Bool
   , optDependencyGraph  :: Maybe FilePath
   , optLaTeXDir         :: FilePath
+  , optCountClusters    :: Bool
+    -- ^ Count extended grapheme clusters rather than code points when
+    -- generating LaTeX.
   , optHTMLDir          :: FilePath
   , optCSSFile          :: Maybe FilePath
   , optIgnoreInterfaces :: Bool
@@ -160,6 +179,7 @@ data PragmaOptions = PragmaOptions
       --   postfix (True) or prefix (False).
   , optInstanceSearchDepth       :: Int
   , optSafe                      :: Bool
+  , optWarningMode               :: WarningMode
   }
   deriving ( Show
            , Eq
@@ -208,6 +228,7 @@ defaultOptions = Options
   , optGenerateHTML     = False
   , optDependencyGraph  = Nothing
   , optLaTeXDir         = defaultLaTeXDir
+  , optCountClusters    = False
   , optHTMLDir          = defaultHTMLDir
   , optCSSFile          = Nothing
   , optIgnoreInterfaces = False
@@ -245,6 +266,7 @@ defaultPragmaOptions = PragmaOptions
   , optPostfixProjections        = False
   , optInstanceSearchDepth       = 500
   , optSafe                      = False
+  , optWarningMode               = fromJust $ lookup defaultWarningMode warningModes
   }
 
 -- | The default termination depth.
@@ -261,6 +283,12 @@ defaultLaTeXDir = "latex"
 
 defaultHTMLDir :: String
 defaultHTMLDir = "html"
+
+-- | The default warning mode.
+
+defaultWarningMode :: String
+defaultWarningMode = "warn"
+
 
 type OptM = ExceptT String IO
 
@@ -382,6 +410,15 @@ latexFlag o = return $ o { optGenerateLaTeX = True }
 
 onlyScopeCheckingFlag :: Flag CommandLineOptions
 onlyScopeCheckingFlag o = return $ o { optOnlyScopeChecking = True }
+
+countClustersFlag :: Flag CommandLineOptions
+countClustersFlag o =
+#ifdef COUNT_CLUSTERS
+  return $ o { optCountClusters = True }
+#else
+  throwError
+    "Cluster counting has not been enabled in this build of Agda."
+#endif
 
 latexDirFlag :: FilePath -> Flag CommandLineOptions
 latexDirFlag d o = return $ o { optLaTeXDir = d }
@@ -513,6 +550,15 @@ verboseFlag s o =
         return (init ss, n)
     usage = throwError "argument to verbose should be on the form x.y.z:N or N"
 
+warningModeFlag :: String -> Flag PragmaOptions
+warningModeFlag s o =
+    case lookup s warningModes of
+      Just m -> return $ o { optWarningMode = m }
+      Nothing -> usage
+  where
+    usage = throwError $ "unknown warning mode (available: " ++
+                           intercalate ", " (map fst warningModes) ++ ")"
+
 terminationDepthFlag :: String -> Flag PragmaOptions
 terminationDepthFlag s o =
     do k <- readM s `catchError` \_ -> usage
@@ -546,15 +592,24 @@ standardOptions =
     , Option []     ["latex-dir"] (ReqArg latexDirFlag "DIR")
                     ("directory in which LaTeX files are placed (default: " ++
                      defaultLaTeXDir ++ ")")
+    , Option []     ["count-clusters"] (NoArg countClustersFlag)
+                    ("count extended grapheme clusters when " ++
+                     "generating LaTeX (note that this flag " ++
+#ifdef COUNT_CLUSTERS
+                     "is not enabled in all builds of Agda)"
+#else
+                     "has not been enabled in this build of Agda)"
+#endif
+                    )
     , Option []     ["html"] (NoArg htmlFlag)
                     "generate HTML files with highlighted source code"
-    , Option []     ["dependency-graph"] (ReqArg dependencyGraphFlag "FILE")
-                    "generate a Dot file with a module dependency graph"
     , Option []     ["html-dir"] (ReqArg htmlDirFlag "DIR")
                     ("directory in which HTML files are placed (default: " ++
                      defaultHTMLDir ++ ")")
     , Option []     ["css"] (ReqArg cssFlag "URL")
                     "the CSS file used by the HTML files (can be relative)"
+    , Option []     ["dependency-graph"] (ReqArg dependencyGraphFlag "FILE")
+                    "generate a Dot file with a module dependency graph"
     , Option []     ["ignore-interfaces"] (NoArg ignoreInterfacesFlag)
                     "ignore interface files (re-type check everything)"
     , Option ['i']  ["include-path"] (ReqArg includeFlag "DIR")
@@ -648,6 +703,10 @@ pragmaOptions =
                     "set instance search depth to N (default: 500)"
     , Option []     ["safe"] (NoArg safeFlag)
                     "disable postulates, unsafe OPTION pragmas and primTrustMe"
+    , Option ['W']  ["warning"] (ReqArg warningModeFlag "MODE")
+                    ("set warning mode to MODE (available: "
+                       ++ intercalate ", " (map fst warningModes)
+                       ++ ". Default: " ++  defaultWarningMode ++ ")")
     ]
 
 -- | Used for printing usage info.

@@ -7,7 +7,7 @@ import Prelude hiding (null)
 
 import Control.Monad.Writer
 
-import Data.List hiding (null)
+import qualified Data.List as List
 import qualified Data.Map as Map
 
 import Agda.Syntax.Common
@@ -190,7 +190,7 @@ boundedSizeMetaHook v tel0 a = do
   case res of
     Just (BoundedLt u) -> do
       n <- getContextSize
-      let tel | n > 0     = telFromList $ genericDrop n $ telToList tel0
+      let tel | n > 0     = telFromList $ drop n $ telToList tel0
               | otherwise = tel0
       addContext' tel $ do
         v <- sizeSuc 1 $ raise (size tel) v `apply` teleArgs tel
@@ -299,8 +299,14 @@ compareMaxViews cmp us vs = case (cmp, us, vs) of
 
 -- | @compareBelowMax u vs@ checks @u <= max vs@.  Precondition: @size vs >= 2@
 compareBelowMax :: DeepSizeView -> SizeMaxView -> TCM ()
-compareBelowMax u vs =
+compareBelowMax u vs = do
+  reportSDoc "tc.conv.size" 45 $ vcat
+    [ text "compareBelowMax"
+    ]
   alt (dontAssignMetas $ alts $ map (compareSizeViews CmpLeq u) vs) $ do
+    reportSDoc "tc.conv.size" 45 $ vcat
+      [ text "compareBelowMax: giving up"
+      ]
     u <- unDeepSizeView u
     v <- unMaxView vs
     size <- sizeType
@@ -312,6 +318,12 @@ compareBelowMax u vs =
 
 compareSizeViews :: Comparison -> DeepSizeView -> DeepSizeView -> TCM ()
 compareSizeViews cmp s1' s2' = do
+  reportSDoc "tc.conv.size" 45 $ hsep
+    [ text "compareSizeViews"
+    , text (show s1')
+    , text (show cmp)
+    , text (show s2')
+    ]
   size <- sizeType
   let (s1, s2) = removeSucs (s1', s2')
       withUnView cont = do
@@ -372,14 +384,27 @@ isSizeConstraint :: Closure Constraint -> TCM Bool
 isSizeConstraint Closure{ clValue = ValueCmp _ s _ _ } = isJust <$> isSizeType s
 isSizeConstraint _ = return False
 
+-- | Take out all size constraints (DANGER!).
+takeSizeConstraints :: TCM [Closure Constraint]
+takeSizeConstraints = do
+  test <- isSizeTypeTest
+  let sizeConstraint :: Closure Constraint -> Bool
+      sizeConstraint cl@Closure{ clValue = ValueCmp CmpLeq s _ _ }
+              | isJust (test $ unEl s) = True
+      sizeConstraint _ = False
+  cs <- filter sizeConstraint . map theConstraint <$> getAllConstraints
+  dropConstraints $ sizeConstraint . theConstraint
+  return cs
+
 -- | Find the size constraints.
 getSizeConstraints :: TCM [Closure Constraint]
 getSizeConstraints = do
   test <- isSizeTypeTest
-  let sizeConstraint cl@Closure{ clValue = ValueCmp CmpLeq s _ _ }
-              | isJust (test $ unEl s) = Just cl
-      sizeConstraint _ = Nothing
-  mapMaybe (sizeConstraint . theConstraint) <$> getAllConstraints
+  let sizeConstraint :: Closure Constraint -> Bool
+      sizeConstraint cl@Closure{ clValue = ValueCmp CmpLeq s _ _ }
+              | isJust (test $ unEl s) = True
+      sizeConstraint _ = False
+  filter sizeConstraint . map theConstraint <$> getAllConstraints
 
 -- | Return a list of size metas and their context.
 getSizeMetas :: Bool -> TCM [(MetaId, Type, Telescope)]
@@ -537,17 +562,17 @@ oldCanonicalizeSizeConstraint c@(Leq a n b) =
   case (a,b) of
     (Rigid{}, Rigid{})       -> return c
     (SizeMeta m xs, Rigid i) -> do
-      j <- findIndex (==i) xs
+      j <- List.findIndex (==i) xs
       return $ Leq (SizeMeta m [0..size xs-1]) n (Rigid j)
     (Rigid i, SizeMeta m xs) -> do
-      j <- findIndex (==i) xs
+      j <- List.findIndex (==i) xs
       return $ Leq (Rigid j) n (SizeMeta m [0..size xs-1])
     (SizeMeta m xs, SizeMeta l ys)
          -- try to invert xs on ys
-       | Just ys' <- mapM (\ y -> findIndex (==y) xs) ys ->
+       | Just ys' <- mapM (\ y -> List.findIndex (==y) xs) ys ->
            return $ Leq (SizeMeta m [0..size xs-1]) n (SizeMeta l ys')
          -- try to invert ys on xs
-       | Just xs' <- mapM (\ x -> findIndex (==x) ys) xs ->
+       | Just xs' <- mapM (\ x -> List.findIndex (==x) ys) xs ->
            return $ Leq (SizeMeta m xs') n (SizeMeta l [0..size ys-1])
          -- give up
        | otherwise -> Nothing
@@ -575,7 +600,7 @@ oldSolveSizeConstraints = whenM haveSizedTypes $ do
 
         -- Size metas in constraints.
         metas0 :: [(MetaId, Int)]  -- meta id + arity
-        metas0 = nub $ map (mapSnd length) $ concatMap flexibleVariables cs
+        metas0 = List.nub $ map (mapSnd length) $ concatMap flexibleVariables cs
 
         -- Unconstrained size metas that do not occur in constraints.
         metas1 :: [(MetaId, Int)]

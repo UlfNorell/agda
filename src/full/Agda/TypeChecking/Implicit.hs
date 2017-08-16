@@ -46,10 +46,10 @@ implicitNamedArgs n expand t0 = do
     t0' <- reduce t0
     case ignoreSharing $ unEl t0' of
       Pi (Dom info a) b | let x = absName b, expand (getHiding info) x -> do
-          info' <- if getHiding info == Hidden then return info else do
+          info' <- if hidden info then return info else do
             reportSDoc "tc.term.args.ifs" 15 $
               text "inserting instance meta for type" <+> prettyTCM a
-            return $ setHiding Instance info
+            return $ makeInstance info
           (_, v) <- newMetaArg info' x a
           let narg = Arg info (Named (Just $ unranged x) v)
           mapFst (narg :) <$> implicitNamedArgs (n-1) expand (absApp b v)
@@ -67,9 +67,9 @@ newMetaArg info x a = do
     newMeta (getHiding info) (argNameToString x) a
   where
     newMeta :: Hiding -> String -> Type -> TCM (MetaId, Term)
-    newMeta Instance  = newIFSMeta
-    newMeta Hidden    = newNamedValueMeta RunMetaOccursCheck
-    newMeta NotHidden = newNamedValueMeta RunMetaOccursCheck
+    newMeta Instance{} = newIFSMeta
+    newMeta Hidden     = newNamedValueMeta RunMetaOccursCheck
+    newMeta NotHidden  = newNamedValueMeta RunMetaOccursCheck
 
 -- | Create a questionmark according to the 'Hiding' info.
 
@@ -83,9 +83,9 @@ newInteractionMetaArg info x a = do
     newMeta (getHiding info) (argNameToString x) a
   where
     newMeta :: Hiding -> String -> Type -> TCM (MetaId, Term)
-    newMeta Instance  = newIFSMeta
-    newMeta Hidden    = newNamedValueMeta' DontRunMetaOccursCheck
-    newMeta NotHidden = newNamedValueMeta' DontRunMetaOccursCheck
+    newMeta Instance{} = newIFSMeta
+    newMeta Hidden     = newNamedValueMeta' DontRunMetaOccursCheck
+    newMeta NotHidden  = newNamedValueMeta' DontRunMetaOccursCheck
 
 ---------------------------------------------------------------------------
 
@@ -106,20 +106,21 @@ insertImplicit _ [] = __IMPOSSIBLE__
 insertImplicit a ts | visible a = impInsert $ nofHidden ts
   where
     nofHidden :: [Arg a] -> [Hiding]
-    nofHidden = takeWhile (NotHidden /=) . map getHiding
+    nofHidden = takeWhile notVisible . map getHiding
 insertImplicit a ts =
   case nameOf (unArg a) of
     Nothing -> maybe BadImplicits impInsert $ upto (getHiding a) $ map getHiding ts
     Just x  -> find [] (rangedThing x) (getHiding a) ts
   where
     upto h [] = Nothing
-    upto h (NotHidden:_) = Nothing
-    upto h (h':_) | h == h' = Just []
-    upto h (h':hs) = (h':) <$> upto h hs
+    upto h (NotHidden : _) = Nothing
+    upto h (h' : _) | sameHiding h h' = Just []
+    upto h (h' : hs) = (h' :) <$> upto h hs
+
     find :: [Hiding] -> ArgName -> Hiding -> [Arg ArgName] -> ImplicitInsertion
     find _ x _ (a@(Arg{}) : _) | visible a = NoSuchName x
     find hs x hidingx (a@(Arg _ y) : ts)
-      | x == y && hidingx == getHiding a = impInsert $ reverse hs
-      | x == y && hidingx /= getHiding a = BadImplicits
-      | otherwise = find (getHiding a:hs) x hidingx ts
-    find i x _ []                            = NoSuchName x
+      | x == y && sameHiding hidingx a = impInsert $ reverse hs
+      | x == y && sameHiding hidingx a = BadImplicits
+      | otherwise = find (getHiding a : hs) x hidingx ts
+    find i x _ [] = NoSuchName x

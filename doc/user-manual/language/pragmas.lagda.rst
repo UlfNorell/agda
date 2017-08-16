@@ -20,6 +20,8 @@ Index of pragmas
 
 * :ref:`BUILTIN <built-ins>`
 
+* :ref:`CATCHALL <case-trees>`
+
 * :ref:`COMPILE <foreign-function-interface>`
 
 * :ref:`FOREIGN <foreign-function-interface>`
@@ -32,4 +34,8 @@ Index of pragmas
 
 * :ref:`POLARITY <polarity_pragma>`
 
+* :ref:`STATIC <built-ins>`
+
 * :ref:`TERMINATING <terminating_pragma>`
+
+See also :ref:`command-line-pragmas`.

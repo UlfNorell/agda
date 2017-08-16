@@ -49,23 +49,27 @@ import Agda.Syntax.Scope.Base
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Closure
 import Agda.TypeChecking.Monad.Context
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Positivity
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Telescope ( ifPiType )
 import Agda.TypeChecking.Reduce (instantiate)
 
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.FileName
 import Agda.Utils.Function
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
-import Agda.Utils.Size
+import Agda.Utils.Pretty ( prettyShow )
 import qualified Agda.Utils.Pretty as P
+import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -201,8 +205,12 @@ instance PrettyTCM Warning where
       [text old] ++ pwords "has been deprecated. Use" ++ [text new] ++ pwords
       "instead. This will be an error in Agda" ++ [text version <> text "."]
 
+    NicifierIssue ws -> vcat $ do
+      for ws $ \ w -> do
+        sayWhere (getRange w) $ pretty w
+
 prettyTCWarnings :: [TCWarning] -> TCM String
-prettyTCWarnings = fmap (unlines . intersperse " ") . prettyTCWarnings'
+prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
 
 prettyTCWarnings' :: [TCWarning] -> TCM [String]
 prettyTCWarnings' = mapM (fmap show . prettyTCM)
@@ -261,6 +269,7 @@ applyFlagsToTCWarnings ifs ws = do
           SafeFlagNoPositivityCheck    -> True
           SafeFlagPolarity             -> True
           DeprecationWarning{}         -> True
+          NicifierIssue{}              -> True
 
   return $ sfp ++ filter (cleanUp . tcWarning) ws
 
@@ -367,6 +376,7 @@ errorString err = case err of
   NotAnExpression{}                        -> "NotAnExpression"
   NotImplemented{}                         -> "NotImplemented"
   NotSupported{}                           -> "NotSupported"
+  AbstractConstructorNotInScope{}          -> "AbstractConstructorNotInScope"
   NotInScope{}                             -> "NotInScope"
   NotLeqSort{}                             -> "NotLeqSort"
   NothingAppliedToHiddenArg{}              -> "NothingAppliedToHiddenArg"
@@ -552,8 +562,10 @@ instance PrettyTCM TypeError where
     UninstantiatedDotPattern e -> fsep $
       pwords "Failed to infer the value of dotted pattern"
 
-    IlltypedPattern p a -> fsep $
-      pwords "Type mismatch"
+    IlltypedPattern p a -> do
+      let ho _ _ = fsep $ pwords "Cannot pattern match on functions"
+      ifPiType a ho $ {- else -} \ _ -> do
+        fsep $ pwords "Type mismatch"
 
     IllformedProjectionPattern p -> fsep $
       pwords "Ill-formed projection pattern " ++ [prettyA p]
@@ -593,22 +605,41 @@ instance PrettyTCM TypeError where
 
     ShadowedModule x [] -> __IMPOSSIBLE__
 
-    ShadowedModule x ms@(m : _) -> fsep $
-      pwords "Duplicate definition of module" ++ [prettyTCM x <> text "."] ++
-      pwords "Previous definition of" ++ [help m] ++ pwords "module" ++ [prettyTCM x] ++
-      pwords "at" ++ [prettyTCM r]
+    ShadowedModule x ms@(m0 : _) -> do
+      -- Clash! Concrete module name x already points to the abstract names ms.
+      (r, m) <- do
+        -- Andreas, 2017-07-28, issue #719.
+        -- First, we try to find whether one of the abstract names @ms@ points back to @x@
+        scope <- getScope
+        -- Get all pairs (y,m) such that y points to some m ∈ ms.
+        let xms0 = ms >>= \ m -> map (,m) $ inverseScopeLookupModule m scope
+        reportSLn "scope.clash.error" 30 $ "candidates = " ++ prettyShow xms0
+
+        -- Try to find x (which will have a different Range, if it has one (#2649)).
+        let xms = filter ((\ y -> not (null $ getRange y) && y == C.QName x) . fst) xms0
+        reportSLn "scope.class.error" 30 $ "filtered candidates = " ++ prettyShow xms
+
+        -- If we found a copy of x with non-empty range, great!
+        ifJust (headMaybe xms) (\ (x', m) -> return (getRange x', m)) $ {-else-} do
+
+        -- If that failed, we pick the first m from ms which has a nameBindingSite.
+        let rms = ms >>= \ m -> map (,m) $
+              filter (noRange /=) $ map nameBindingSite $ reverse $ mnameToList m
+              -- Andreas, 2017-07-25, issue #2649
+              -- Take the first nameBindingSite we can get hold of.
+        reportSLn "scope.class.error" 30 $ "rangeful clashing modules = " ++ prettyShow rms
+
+        -- If even this fails, we pick the first m and give no range.
+        return $ fromMaybe (noRange, m0) $ headMaybe rms
+
+      fsep $
+        pwords "Duplicate definition of module" ++ [prettyTCM x <> text "."] ++
+        pwords "Previous definition of" ++ [help m] ++ pwords "module" ++ [prettyTCM x] ++
+        pwords "at" ++ [prettyTCM r]
       where
-        help m = do
-          b <- isDatatypeModule m
-          if b then text "datatype" else empty
-
-        r = case [ r | r <- map (defSiteOfLast . mnameToList) ms
-                     , r /= noRange ] of
-              []    -> noRange
-              r : _ -> r
-
-        defSiteOfLast [] = noRange
-        defSiteOfLast ns = nameBindingSite (last ns)
+        help m = caseMaybeM (isDatatypeModule m) empty $ \case
+          IsData   -> text "(datatype)"
+          IsRecord -> text "(record)"
 
     ModuleArityMismatch m EmptyTel args -> fsep $
       pwords "The module" ++ [prettyTCM m] ++
@@ -828,6 +859,11 @@ instance PrettyTCM TypeError where
 
     BothWithAndRHS -> fsep $ pwords "Unexpected right hand side"
 
+    AbstractConstructorNotInScope q -> fsep $
+      [ text "Constructor"
+      , prettyTCM q
+      ] ++ pwords "is abstract, thus, not in scope here"
+
     NotInScope xs -> do
       inscope <- Set.toList . concreteNamesInScope <$> getScope
       fsep (pwords "Not in scope:") $$ nest 2 (vcat $ map (name inscope) xs)
@@ -872,8 +908,10 @@ instance PrettyTCM TypeError where
       where
         help :: ModuleName -> TCM Doc
         help m = do
-          b <- isDatatypeModule m
-          sep [prettyTCM m, if b then text "(datatype module)" else empty]
+          anno <- caseMaybeM (isDatatypeModule m) (return empty) $ \case
+            IsData   -> return $ text "(datatype module)"
+            IsRecord -> return $ text "(record module)"
+          sep [prettyTCM m, anno ]
 
     UninstantiatedModule x -> fsep (
       pwords "Cannot access the contents of the parameterised module"
@@ -1173,7 +1211,8 @@ instance PrettyTCM TypeError where
       where
         cxt' = cxt `abstract` raise (size cxt) (nameCxt names)
         nameCxt [] = EmptyTel
-        nameCxt (x : xs) = ExtendTel (defaultDom (El I.Prop $ I.Var 0 [])) $ NoAbs (show x) $ nameCxt xs
+        nameCxt (x : xs) = ExtendTel (defaultDom (El I.Prop $ I.var 0)) $
+          NoAbs (P.prettyShow x) $ nameCxt xs
 
     NeedOptionCopatterns -> fsep $
       pwords "Option --copatterns needed to enable destructor patterns"
@@ -1194,9 +1233,9 @@ instance PrettyTCM TypeError where
 
     prettyArg :: Arg (I.Pattern' a) -> TCM Doc
     prettyArg (Arg info x) = case getHiding info of
-      Hidden    -> braces $ prettyPat 0 x
-      Instance  -> dbraces $ prettyPat 0 x
-      NotHidden -> prettyPat 1 x
+      Hidden     -> braces $ prettyPat 0 x
+      Instance{} -> dbraces $ prettyPat 0 x
+      NotHidden  -> prettyPat 1 x
 
     prettyPat :: Integer -> (I.Pattern' a) -> TCM Doc
     prettyPat _ (I.VarP _) = text "_"
@@ -1449,9 +1488,9 @@ class Verbalize a where
 instance Verbalize Hiding where
   verbalize h =
     case h of
-      Hidden    -> "hidden"
-      NotHidden -> "visible"
-      Instance  -> "instance"
+      Hidden     -> "hidden"
+      NotHidden  -> "visible"
+      Instance{} -> "instance"
 
 instance Verbalize Relevance where
   verbalize r =

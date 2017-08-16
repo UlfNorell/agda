@@ -1,0 +1,122 @@
+When releasing a release candidate (RC) for a stable version of Agda,
+the following procedure can be followed:
+
+* Verify that the Travis builds have no errors.
+
+* Get a clean Agda repository.
+
+    MAJORVERSION=<current-Agda-version-eg-2.4.2>
+    VERSION=<current-stable-version-eg-2.4.0.2>
+    git clone git@github.com:agda/agda.git agda-release
+    cd agda-release
+    git checkout stable-$MAJORVERSION
+
+* The version of the RC is the current version released + current date
+
+    RC_VERSION=<current-released-version-current-date-eg-2.4.2.3.20150913>
+
+* Change VERSION to RC_VERSION in:
+
+    .ghci
+    Agda.cabal
+    default.nix
+    /doc/user-manual/conf.py
+    mk/versions.mk
+    src/data/emacs-mode/agda2-mode.el
+    src/data/emacs-mode/agda2-mode-pkg.el
+    src/size-solver/size-solver.cabal
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
+
+* Obtain and install the standard library branch related to the Agda
+  bugfix version:
+
+    make up-to-date-std-lib
+
+* Finish the CHANGELOG.
+
+* Update the README.md, if necessary.
+
+* Update the LICENSE file, if necessary.
+
+* Remove -Werror and -fprof-auto from Agda.cabal (this is required by
+  `cabal --check`).
+
+* Run the test-suite:
+
+    make compile-emacs-mode
+    make test
+
+  Note that "compile-emacs-mode" invokes "agda-mode compile", which should
+  ensure that the Emacs mode can be compiled without errors or
+  warnings (except for the "cl package required at runtime" warning).
+
+* Remove the Cabal tests-suites `agda-tests` and `internal-tests` from
+  Agda.cabal.
+
+* Build source distributions:
+
+    cabal configure
+    cabal check
+    cabal sdist
+
+* Ensure that the package builds properly (with multiple versions of GHC if
+  possible) in Linux, MacOS X and Windows.
+
+    BASE=`pwd`
+    cd ${TMPDIR:-/tmp}
+    tar xzf $BASE/dist/Agda-$RC_VERSION.tar.gz
+    cd Agda-$RC_VERSION
+    cabal install
+
+  Do not forget to test the Emacs mode.
+
+* Tag the relase candidate (do not forget to record the changes above
+  first):
+
+    cd $BASE
+    git tag -a v$RC_VERSION -m "Agda $VERSION release candidate n"
+
+* Restore the Cabal tests-suites `agda-tests` and `internal-tests`
+  from Agda.cabal.
+
+* Restore -Werror and -fprof-auto in Agda.cabal.
+
+* Restore the version number VERSION in:
+
+    .ghci
+    Agda.cabal
+    default.nix
+    /doc/user-manual/conf.py
+    mk/versions.mk
+    src/data/emacs-mode/agda2-mode.el
+    src/size-solver/size-solver.cabal
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
+
+* Tag and push the standard library used for testing the release
+  candidate (requires Git >= 1.8.3) (untested):
+
+    cd std-lib
+    git tag -a v$RC_VERSION -m "Agda standard library compatible with Agda $VERSION release candidate n"
+    git push --follow-tags
+
+* Push all changes and merge into 'master' branch (requires Git >= 1.8.3).
+
+    git push --follow-tags
+
+    git checkout master
+    git merge stable-$MAJORVERSION
+
+* Push into master
+
+    git push
+
+* Announce the release candidate on the Agda mailing lists (users and
+  developers).
+
+  Note that the announce shouldn't include
+
+    https://github.com/agda/agda/releases/tag/$RC_VERSION.tar.gz
+
+  but $BASE/dist/Agda-$RC_VERSION.tar.gz.

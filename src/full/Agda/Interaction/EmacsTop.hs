@@ -7,7 +7,7 @@ import Control.Applicative
 import Control.Monad.State
 
 import Data.Char
-import Data.List
+import qualified Data.List as List
 import Data.Maybe
 
 import System.IO
@@ -46,7 +46,7 @@ mimicGHCi setup = do
       hSetEncoding  stdin  utf8
 
     setInteractionOutputCallback $
-        liftIO . mapM_ print <=< lispifyResponse
+        mapM_ print <=< lispifyResponse
 
     commands <- liftIO $ initialiseCommandQueue readCommand
 
@@ -103,14 +103,14 @@ formatWarningsAndErrors g w e = (body, title)
     isG = not $ null g
     isW = not $ null w
     isE = not $ null e
-    title = intercalate "," $ catMaybes
+    title = List.intercalate "," $ catMaybes
               [ " Goals"    <$ guard isG
               , " Warnings" <$ guard isW
               , " Errors"   <$ guard isE
               , " Done"     <$ guard (not (isG || isW || isE))
               ]
 
-    body = intercalate "\n" $ catMaybes
+    body = List.intercalate "\n" $ catMaybes
              [ g                    <$ guard isG
              , delimiter "Warnings" <$ guard (isW && (isG || isE))
              , w                    <$ guard isW
@@ -120,9 +120,9 @@ formatWarningsAndErrors g w e = (body, title)
 
 -- | Convert Response to an elisp value for the interactive emacs frontend.
 
-lispifyResponse :: Response -> TCM [Lisp String]
-lispifyResponse (Resp_HighlightingInfo info modFile) =
-  (:[]) <$> lispifyHighlightingInfo info modFile
+lispifyResponse :: Response -> IO [Lisp String]
+lispifyResponse (Resp_HighlightingInfo info method modFile) =
+  (:[]) <$> lispifyHighlightingInfo info method modFile
 lispifyResponse (Resp_DisplayInfo info) = return $ case info of
     Info_CompilationOk w e -> f body "*Compilation result*"
       where (body, _) = formatWarningsAndErrors "The module was successfully compiled.\n" w e -- abusing the goals field since we ignore the title
@@ -162,7 +162,7 @@ lispifyResponse (Resp_RunningInfo n s)
   | otherwise = return [ L [A "agda2-verbose", A (quote s)] ]
 lispifyResponse (Resp_Status s)
     = return [ L [ A "agda2-status-action"
-                 , A (quote $ intercalate "," $ catMaybes [checked, showImpl])
+                 , A (quote $ List.intercalate "," $ catMaybes [checked, showImpl])
                  ]
              ]
   where

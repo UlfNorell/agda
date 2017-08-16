@@ -1,12 +1,23 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP                  #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Agda.Auto.CaseSplit where
+
+#if __GLASGOW_HASKELL__ <= 708
+import Control.Applicative ( (<$>), (<*>), pure )
+#endif
 
 import Data.IORef
 import Data.Tuple (swap)
 import Data.List (findIndex, union)
+import Data.Monoid ((<>), Sum(..))
+import Data.Foldable (foldMap)
 import qualified Data.Set    as Set
 import qualified Data.IntMap as IntMap
+import Control.Monad.State as St hiding (lift)
+import Control.Monad.Reader as Rd hiding (lift)
+import qualified Control.Monad.State as St
+import Data.Function
 
 import Agda.Syntax.Common (Hiding(..))
 import Agda.Auto.NarrowingSearch
@@ -17,6 +28,7 @@ import Agda.Auto.Typecheck
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+import Agda.Utils.Monad (or2M)
 
 abspatvarname :: String
 abspatvarname = "\0absurdPattern"
@@ -105,7 +117,8 @@ caseSplitSearch' branchsearch depthinterval depth recdef ctx tt pats = do
     case sols1 of
      (_:_) -> return sols1
      [] -> do
-      let r [] = return []
+      let r :: [Nat] -> IO [Sol o]
+          r [] = return []
           r (v:vs) = do
            sols2 <- splitvar mblkvar v
            case sols2 of
@@ -126,7 +139,7 @@ caseSplitSearch' branchsearch depthinterval depth recdef ctx tt pats = do
    splitvar :: [Nat] -> Nat -> IO [Sol o]
    splitvar mblkvar scrut = do
     let scruttype = infertypevar ctx scrut
-    case rm scruttype of
+    case rm __IMPOSSIBLE__ scruttype of
      App _ _ (Const c) _ -> do
       cd <- readIORef c
       case cdcont cd of
@@ -148,7 +161,7 @@ caseSplitSearch' branchsearch depthinterval depth recdef ctx tt pats = do
          dobranches [] = return [[]]
          dobranches (con : cons) = do
           cond <- readIORef con
-          let ff t = case rm t of
+          let ff t = case rm __IMPOSSIBLE__ t of
                         Pi _ h _ it (Abs id ot) ->
                          let (xs, inft) = ff ot
                          in (((h, scrut + length xs), id, lift (scrut + length xs + 1) it) : xs, inft)
@@ -186,7 +199,7 @@ caseSplitSearch' branchsearch depthinterval depth recdef ctx tt pats = do
                          if elem scrut mblkvar then costCaseSplitLow else (if scrut < length ctx - nscrutavoid && nothid then costCaseSplitHigh else costCaseSplitVeryHigh)
 
                  nothid = let HI hid _ = ctx !! scrut
-                          in case hid of {Hidden -> False; Instance -> False; NotHidden -> True}
+                          in hid == NotHidden
 
 
              sols <- rc (depth - cost) (length ctx - 1 - scrut) ctx2 tt2 pats2
@@ -201,56 +214,60 @@ caseSplitSearch' branchsearch depthinterval depth recdef ctx tt pats = do
 infertypevar :: CSCtx o -> Nat -> MExp o
 infertypevar ctx v = snd $ (drophid ctx) !! v
 
-replace :: Nat -> Nat -> MExp o -> MExp o -> MExp o
-replace sv nnew re = r 0
- where
-  r n e =
-   case rm e of
-         App uid ok elr@(Var v) args ->
-          if v >= n then
-           if v - n == sv then
-            betareduce (lift n re) (rs n args)
-           else
-            if v - n > sv then
-             NotM $ App uid ok (Var (v + nnew - 1)) (rs n args)
-            else
-             NotM $ App uid ok elr (rs n args)
-          else
-           NotM $ App uid ok elr (rs n args)
-         App uid ok elr@(Const _) args ->
-          NotM $ App uid ok elr (rs n args)
-         Lam hid (Abs mid e) -> NotM $ Lam hid (Abs mid (r (n + 1) e))
-         Pi uid hid possdep it (Abs mid ot) -> NotM $ Pi uid hid possdep (r n it) (Abs mid (r (n + 1) ot))
-         Sort{} -> e
+class Replace o t u | t u -> o where
+  replace' :: Nat -> MExp o -> t -> Reader (Nat, Nat) u
 
-         AbsurdLambda{} -> e
+replace :: Replace o t u => Nat -> Nat -> MExp o -> t -> u
+replace sv nnew e t = replace' 0 e t `runReader` (sv, nnew)
 
+instance Replace o t u => Replace o (Abs t) (Abs u) where
+  replace' n re (Abs mid b) = Abs mid <$> replace' (n + 1) re b
 
-  rs n es =
-   case rm es of
-    ALNil -> NotM $ ALNil
-    ALCons hid a as -> NotM $ ALCons hid (r n a) (rs n as)
+instance Replace o (Exp o) (MExp o) where
+  replace' n re e = case e of
+    App uid ok elr@(Var v) args -> do
+      ih         <- NotM <$> replace' n re args
+      (sv, nnew) <- ask
+      return $
+        if v >= n
+        then if v - n == sv
+             then betareduce (lift n re) ih
+             else if v - n > sv
+                  then NotM $ App uid ok (Var (v + nnew - 1)) ih
+                  else NotM $ App uid ok elr ih
+        else NotM $ App uid ok elr ih
+    App uid ok elr@Const{} args ->
+      NotM . App uid ok elr . NotM <$> replace' n re args
+    Lam hid b -> NotM . Lam hid <$> replace' (n + 1) re b
+    Pi uid hid possdep it b ->
+      fmap NotM $ Pi uid hid possdep <$> replace' n re it <*> replace' n re b
+    Sort{} -> return $ NotM e
+    AbsurdLambda{} -> return $ NotM e
 
-    ALProj{} -> __IMPOSSIBLE__
+instance Replace o t u => Replace o (MM t (RefInfo o)) u where
+  replace' n re = replace' n re . rm __IMPOSSIBLE__
 
-
-    ALConPar as -> NotM $ ALConPar (rs n as)
+instance Replace o (ArgList o) (ArgList o) where
+  replace' n re args = case args of
+    ALNil           -> return ALNil
+    ALCons hid a as ->
+      ALCons hid <$> replace' n re a <*> (NotM <$> replace' n re as)
+    ALProj{}        -> __IMPOSSIBLE__
+    ALConPar as     -> ALConPar . NotM <$> replace' n re as
 
 
 betareduce :: MExp o -> MArgList o -> MExp o
-betareduce e args = case rm args of
+betareduce e args = case rm __IMPOSSIBLE__ args of
  ALNil -> e
- ALCons _ a rargs -> case rm e of
+ ALCons _ a rargs -> case rm __IMPOSSIBLE__ e of
   App uid ok elr eargs -> NotM $ App uid ok elr (concatargs eargs args)
   Lam _ (Abs _ b) -> betareduce (replace 0 0 a b) rargs
   _ -> __IMPOSSIBLE__ -- not type correct if this happens
-
  ALProj{} -> __IMPOSSIBLE__
-
  ALConPar as -> __IMPOSSIBLE__
 
-concatargs :: MM (ArgList o) (RefInfo o) -> MArgList o -> MArgList o
-concatargs xs ys = case rm xs of
+concatargs :: MArgList o -> MArgList o -> MArgList o
+concatargs xs ys = case rm __IMPOSSIBLE__ xs of
   ALNil -> ys
 
   ALCons hid x xs -> NotM $ ALCons hid x (concatargs xs ys)
@@ -259,9 +276,10 @@ concatargs xs ys = case rm xs of
 
   ALConPar as -> NotM $ ALConPar (concatargs xs ys)
 
-replacep :: Nat -> Nat -> CSPatI o -> MExp o -> CSPat o -> CSPat o
+replacep :: forall o. Nat -> Nat -> CSPatI o -> MExp o -> CSPat o -> CSPat o
 replacep sv nnew rp re = r
  where
+  r :: CSPat o -> CSPat o
   r (HI hid (CSPatConApp c ps)) = HI hid (CSPatConApp c (map r ps))
   r (HI hid (CSPatVar v)) = if v == sv then
                     HI hid rp
@@ -276,69 +294,140 @@ replacep sv nnew rp re = r
 
   r _ = __IMPOSSIBLE__ -- other constructors dont appear in indata Pats
 
-unifyexp :: MExp o -> MExp o -> Maybe [(Nat, MExp o)]
-unifyexp e1 e2 = r e1 e2 (\unif -> Just unif) []
- where
-  r e1 e2 cont unif = case (rm e1, rm e2) of
-   (App _ _ elr1 args1, App _ _ elr2 args2) | elr1 == elr2 -> rs args1 args2 cont unif
-   (Lam hid1 (Abs _ b1), Lam hid2 (Abs _ b2)) | hid1 == hid2 -> r b1 b2 cont unif
-   (Pi _ hid1 _ it1 (Abs _ ot1), Pi _ hid2 _ it2 (Abs _ ot2)) | hid1 == hid2 -> r it1 it2 (r ot1 ot2 cont) unif
-   (Sort _, Sort _) -> cont unif -- a bit sloppy
-   (App _ _ (Var v) (NotM ALNil), App _ _ (Var u) (NotM ALNil))
-     | v == u -> cont unif
+
+
+-- Unification takes two values of the same type and generates a list
+-- of assignments making the two terms equal.
+
+type Assignments o = [(Nat, Exp o)]
+
+class Unify o t | t -> o where
+  unify'    :: t -> t -> StateT (Assignments o) Maybe ()
+  notequal' :: t -> t -> ReaderT (Nat, Nat) (StateT (Assignments o) IO) Bool
+
+unify :: Unify o t => t -> t -> Maybe (Assignments o)
+unify t u = unify' t u `execStateT` []
+
+notequal :: Unify o t => Nat -> Nat -> t -> t -> IO Bool
+notequal fstnew nbnew t1 t2 = notequal' t1 t2 `runReaderT` (fstnew, nbnew)
+                                              `evalStateT` []
+
+instance Unify o t => Unify o (MM t (RefInfo o)) where
+  unify' = unify' `on` rm __IMPOSSIBLE__
+
+  notequal' = notequal' `on` rm __IMPOSSIBLE__
+
+unifyVar :: Nat -> Exp o -> StateT (Assignments o) Maybe ()
+unifyVar v e = do
+  unif <- get
+  case lookup v unif of
+    Nothing -> modify ((v, e) :)
+    Just e' -> unify' e e'
+
+instance Unify o t => Unify o (Abs t) where
+  unify' (Abs _ b1) (Abs _ b2) = unify' b1 b2
+
+  notequal' (Abs _ b1) (Abs _ b2) = notequal' b1 b2
+
+instance Unify o (Exp o) where
+  unify' e1 e2 = case (e1, e2) of
+   (App _ _ elr1 args1, App _ _ elr2 args2) | elr1 == elr2 -> unify' args1 args2
+   (Lam hid1 b1, Lam hid2 b2)               | hid1 == hid2 -> unify' b1 b2
+   (Pi _ hid1 _ a1 b1, Pi _ hid2 _ a2 b2)   | hid1 == hid2 -> unify' a1 a2
+                                                           >> unify' b1 b2
+   (Sort _, Sort _) -> return () -- a bit sloppy
    (App _ _ (Var v) (NotM ALNil), _)
-     | elem v (freevars e2) -> Nothing -- Occurs check
+     | elem v (freevars e2) -> St.lift Nothing -- Occurs check
    (_, App _ _ (Var v) (NotM ALNil))
-     | elem v (freevars e1) -> Nothing -- Occurs check
-   (App _ _ (Var v) (NotM ALNil), _) ->
-    case lookup v unif of
-     Nothing -> cont ((v, e2) : unif)
-     Just e1' -> r e1' e2 cont unif
-   (_, App _ _ (Var v) (NotM ALNil)) ->
-    case lookup v unif of
-     Nothing -> cont ((v, e1) : unif)
-     Just e2' -> r e1 e2' cont unif
-   _ -> Nothing
-  rs args1 args2 cont unif = case (rm args1, rm args2) of
-   (ALNil, ALNil) -> cont unif
-   (ALCons hid1 a1 as1, ALCons hid2 a2 as2) | hid1 == hid2 -> r a1 a2 (rs as1 as2 cont) unif
-   (ALConPar as1, ALCons _ _ as2) -> rs as1 as2 cont unif
-   (ALCons _ _ as1, ALConPar as2) -> rs as1 as2 cont unif
-   (ALConPar as1, ALConPar as2) -> rs as1 as2 cont unif
-   _ -> Nothing
+     | elem v (freevars e1) -> St.lift Nothing -- Occurs check
+   (App _ _ (Var v) (NotM ALNil), _) -> unifyVar v e2
+   (_, App _ _ (Var v) (NotM ALNil)) -> unifyVar v e1
+   _ -> St.lift Nothing
 
-lift :: Nat -> MExp o -> MExp o
+  notequal' e1 e2 = do
+    (fstnew, nbnew) <- ask
+    unifier         <- get
+    case (e1, e2) of
+      (App _ _ elr1 es1, App _ _ elr2 es2) | elr1 == elr2 -> notequal' es1 es2
+      (_, App _ _ (Var v2) (NotM ALNil)) -- why is this not symmetric?!
+        | fstnew <= v2 && v2 < fstnew + nbnew ->
+        case lookup v2 unifier of
+          Nothing  -> modify ((v2, e1):) >> return False
+          Just e2' -> notequal' e1 e2'
+{-
+  GA: Skipped these: Not sure why we'd claim they're impossible
+      (_, App _ _ (Var v2) (NotM ALProj{})) -> __IMPOSSIBLE__
+      (_, App _ _ (Var v2) (NotM ALConPar{})) -> __IMPOSSIBLE__
+-}
+      (App _ _ (Const c1) es1, App _ _ (Const c2) es2) -> do
+        cd1 <- liftIO $ readIORef c1
+        cd2 <- liftIO $ readIORef c2
+        case (cdcont cd1, cdcont cd2) of
+          (Constructor{}, Constructor{}) -> if c1 == c2 then notequal' es1 es2
+                                            else return True
+          _ -> return False
+{- GA: Why don't we have a case for distinct heads after all these
+       unification cases for vars with no spines & metas that can
+       be looked up?
+      (App _ _ elr1 _, App _ _ elr2 _) | elr1 <> elr2 -> return True
+-}
+      _ -> return False
+
+instance Unify o (ArgList o) where
+  unify' args1 args2 = case (args1, args2) of
+   (ALNil, ALNil) -> pure ()
+   (ALCons hid1 a1 as1, ALCons hid2 a2 as2) | hid1 == hid2 -> unify' a1 a2
+                                                           >> unify' as1 as2
+   (ALConPar as1, ALCons _ _ as2) -> unify' as1 as2
+   (ALCons _ _ as1, ALConPar as2) -> unify' as1 as2
+   (ALConPar as1, ALConPar as2)   -> unify' as1 as2
+   _ -> St.lift Nothing
+
+  notequal' args1 args2 = case (args1, args2) of
+    (ALCons _ e es, ALCons _ f fs) -> notequal' e f `or2M` notequal' es fs
+    (ALConPar es1, ALConPar es2)   -> notequal' es1 es2
+    _                              -> return False
+
+-- This definition is only here to respect the previous interface.
+unifyexp :: MExp o -> MExp o -> Maybe ([(Nat, MExp o)])
+unifyexp e1 e2 = fmap (NotM <$>) <$> unify e1 e2
+
+class Lift t where
+  lift' :: Nat -> Nat -> t -> t
+
+lift :: Lift t => Nat -> t -> t
 lift 0 = id
-lift n = r 0
- where
-  r j e =
-   case rm e of
-         App uid ok elr args -> case elr of
-          Var v | v >= j -> NotM $ App uid ok (Var (v + n)) (rs j args)
-          _ -> NotM $ App uid ok elr (rs j args)
-         Lam hid (Abs mid e) -> NotM $ Lam hid (Abs mid (r (j + 1) e))
-         Pi uid hid possdep it (Abs mid ot) -> NotM $ Pi uid hid possdep (r j it) (Abs mid (r (j + 1) ot))
-         Sort{} -> e
+lift n = lift' n 0
 
-         AbsurdLambda{} -> e
+instance Lift t => Lift (Abs t) where
+  lift' n j (Abs mid b) = Abs mid (lift' n (j + 1) b)
 
+instance Lift t => Lift (MM t r) where
+  lift' n j = NotM . lift' n j . rm __IMPOSSIBLE__
 
-  rs j es =
-   case rm es of
-    ALNil -> NotM ALNil
-    ALCons hid a as -> NotM $ ALCons hid (r j a) (rs j as)
+instance Lift (Exp o) where
+  lift' n j e = case e of
+    App uid ok elr args -> case elr of
+      Var v | v >= j -> App uid ok (Var (v + n)) (lift' n j args)
+      _ -> App uid ok elr (lift' n j args)
+    Lam hid b -> Lam hid (lift' n j b)
+    Pi uid hid possdep it b -> Pi uid hid possdep (lift' n j it) (lift' n j b)
+    Sort{} -> e
+    AbsurdLambda{} -> e
 
-    ALProj{} -> __IMPOSSIBLE__
-
-
-    ALConPar as -> NotM $ ALConPar (rs j as)
+instance Lift (ArgList o) where
+  lift' n j args = case args of
+    ALNil           -> ALNil
+    ALCons hid a as -> ALCons hid (lift' n j a) (lift' n j as)
+    ALProj{}        -> __IMPOSSIBLE__
+    ALConPar as     -> ALConPar (lift' n j as)
 
 
 removevar :: CSCtx o -> MExp o -> [CSPat o] -> [(Nat, MExp o)] -> (CSCtx o, MExp o, [CSPat o])
 removevar ctx tt pats [] = (ctx, tt, pats)
 removevar ctx tt pats ((v, e) : unif) =
  let
-  e2 = replace v 0 (__IMPOSSIBLE__ {- occurs check failed -}) e
+  e2 = replace v 0 __IMPOSSIBLE__ {- occurs check failed -} e
   thesub = replace v 0 e2
   ctx1 = map (\(HI hid (id, t)) -> HI hid (id, thesub t)) (take v ctx) ++
          map (\(HI hid (id, t)) -> HI hid (id, thesub t)) (drop (v + 1) ctx)
@@ -347,51 +436,6 @@ removevar ctx tt pats ((v, e) : unif) =
   unif' = map (\(uv, ue) -> (if uv > v then uv - 1 else uv, thesub ue)) unif
  in
   removevar ctx1 tt' pats' unif'
-
-notequal :: Nat -> Nat -> MExp o -> MExp o -> IO Bool
-notequal firstnew nnew e1 e2 =
-  case (rm e1, rm e2) of
-   (App _ _ _ es1, App _ _ _ es2) -> rs es1 es2 (\_ -> return False) []
-   _ -> __IMPOSSIBLE__
- where
-  rs :: MArgList o -> MArgList o -> ([(Nat, MExp o)] -> IO Bool) -> [(Nat, MExp o)] -> IO Bool
-  rs es1 es2 cont unifier2 =
-   case (rm es1, rm es2) of
-    (ALCons _ e1 es1, ALCons _ e2 es2) -> r e1 e2 (rs es1 es2 cont) unifier2
-
-    (ALConPar es1, ALConPar es2) -> rs es1 es2 cont unifier2
-
-    _ -> cont unifier2
-
-  r :: MExp o -> MExp o -> ([(Nat, MExp o)] -> IO Bool) -> [(Nat, MExp o)] -> IO Bool
-  r e1 e2 cont unifier2 = case rm e2 of
-   App _ _ (Var v2) es2 | firstnew <= v2 && v2 < firstnew + nnew ->
-    case rm es2 of
-     ALNil ->
-      case lookup v2 unifier2 of
-       Nothing -> cont ((v2, e1) : unifier2)
-       Just e2' -> cc e1 e2'
-     ALCons{} -> cont unifier2
-
-     ALProj{} -> __IMPOSSIBLE__
-
-
-     ALConPar{} -> __IMPOSSIBLE__
-
-   _ -> cc e1 e2
-   where
-   cc e1 e2 = case (rm e1, rm e2) of
-    (App _ _ (Const c1) es1, App _ _ (Const c2) es2) -> do
-     cd1 <- readIORef c1
-     cd2 <- readIORef c2
-     case (cdcont cd1, cdcont cd2) of
-      (Constructor{}, Constructor{}) ->
-       if c1 == c2 then
-        rs es1 es2 cont unifier2
-       else
-        return True
-      _ -> cont unifier2
-    _ -> cont unifier2
 
 findperm :: [MExp o] -> Maybe [Nat]
 findperm ts =
@@ -411,7 +455,7 @@ findperm ts =
  in r m [] (length ts)
 
 
-freevars :: MExp o -> [Nat]
+freevars :: FreeVars t => t -> [Nat]
 freevars = Set.toList . freeVars
 
 applyperm :: [Nat] -> CSCtx o -> MExp o -> [CSPat o] ->
@@ -454,48 +498,60 @@ depthofvar v pats =
  in depth
 
 -- --------------------
+-- | Speculation: Type class computing the size (?) of a pattern
+--   and collecting the vars it introduces
+class LocalTerminationEnv a where
+  sizeAndBoundVars :: a -> (Sum Nat, [Nat])
 
+instance LocalTerminationEnv a => LocalTerminationEnv (HI a) where
+  sizeAndBoundVars (HI _ p) = sizeAndBoundVars p
+
+instance LocalTerminationEnv (CSPatI o) where
+  sizeAndBoundVars p = case p of
+    CSPatConApp _ ps -> (1, []) <> sizeAndBoundVars ps
+    CSPatVar n       -> (0, [n])
+    CSPatExp e       -> sizeAndBoundVars e
+    _                -> (0, [])
+
+instance LocalTerminationEnv a => LocalTerminationEnv [a] where
+  sizeAndBoundVars = foldMap sizeAndBoundVars
+
+instance LocalTerminationEnv (MExp o) where
+--  sizeAndBoundVars e = case rm __IMPOSSIBLE__ e of
+-- GA: 2017 06 27: Not actually impossible! (cf. #2620)
+  sizeAndBoundVars Meta{} = (0, [])
+-- Does this default behaviour even make sense? The catchall in the
+-- following match seems to suggest it does
+  sizeAndBoundVars (NotM e) = case e of
+    App _ _ (Var v) _      -> (0, [v])
+    App _ _ (Const _) args -> (1, []) <> sizeAndBoundVars args
+    _                      -> (0, [])
+
+instance (LocalTerminationEnv a, LocalTerminationEnv b) => LocalTerminationEnv (a, b) where
+  sizeAndBoundVars (a, b) = sizeAndBoundVars a <> sizeAndBoundVars b
+
+instance LocalTerminationEnv (MArgList o) where
+  sizeAndBoundVars as = case rm __IMPOSSIBLE__ as of
+    ALNil         -> (0, [])
+    ALCons _ a as -> sizeAndBoundVars (a, as)
+    ALProj{}      -> __IMPOSSIBLE__
+    ALConPar as   -> sizeAndBoundVars as
+
+
+-- | Take a list of patterns and returns (is, size, vars) where (speculation):
+---  * the is are the pattern indices the vars are contained in
+--   * size is total number of constructors removed (?) to access vars
 localTerminationEnv :: [CSPat o] -> ([Nat], Nat, [Nat])
-localTerminationEnv pats =
- let g _ [] = ([], 0, [])
-     g i (hp@(HI _ p) : ps) = case p of
-      CSPatConApp{} ->
-       let (size, vars) = h hp
-           (is, size', vars') = g (i + 1) ps
-       in (i : is, size + size', vars ++ vars')
-      _ -> g (i + 1) ps
-     h (HI _ p) = case p of
-      CSPatConApp c ps ->
-       let (size, vars) = hs ps
-       in (size + 1, vars)
-      CSPatVar n -> (0, [n])
-      CSPatExp e -> he e
-      _ -> (0, [])
-     hs [] = (0, [])
-     hs (p : ps) =
-      let (size, vars) = h p
-          (size', vars') = hs ps
-      in (size + size', vars ++ vars')
-     he e = case rm e of
-      App _ _ (Var v) _ -> (0, [v])
-      App _ _ (Const _) args ->
-       let (size, vars) = hes args
-       in (size + 1, vars)
-      _ -> (0, [])
-     hes as = case rm as of
-      ALNil -> (0, [])
-      ALCons _ a as ->
-       let (size, vars) = he a
-           (size', vars') = hes as
-       in (size + size', vars ++ vars')
+localTerminationEnv pats = (is, getSum s, vs) where
 
-      ALProj{} -> __IMPOSSIBLE__
+  (is , s , vs) = g 0 pats
 
-
-      ALConPar as -> hes as
-
- in g 0 pats
-
+  g :: Nat -> [CSPat o] -> ([Nat], Sum Nat, [Nat])
+  g _ [] = ([], 0, [])
+  g i (hp@(HI _ p) : ps) = case p of
+    CSPatConApp{} -> let (size, vars) = sizeAndBoundVars hp
+                     in ([i], size, vars) <> g (i + 1) ps
+    _ -> g (i + 1) ps
 
 localTerminationSidecond :: ([Nat], Nat, [Nat]) -> ConstRef o -> MExp o -> EE (MyPB o)
 localTerminationSidecond (is, size, vars) reccallc b =

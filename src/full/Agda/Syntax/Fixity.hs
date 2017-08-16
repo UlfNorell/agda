@@ -28,6 +28,7 @@ import Agda.Syntax.Notation
 
 import Agda.Utils.Lens
 import Agda.Utils.List
+import Agda.Utils.Pretty
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -257,11 +258,14 @@ data Precedence = TopCtx | FunctionSpaceDomainCtx
                 | WithFunCtx | WithArgCtx | DotPatternCtx
     deriving (Show, Typeable, Data, Eq)
 
+instance Pretty Precedence where
+  pretty = text . show
+
 -- | The precedence corresponding to a possibly hidden argument.
 hiddenArgumentCtx :: Hiding -> Precedence
-hiddenArgumentCtx NotHidden = ArgumentCtx
-hiddenArgumentCtx Hidden    = TopCtx
-hiddenArgumentCtx Instance  = TopCtx
+hiddenArgumentCtx NotHidden  = ArgumentCtx
+hiddenArgumentCtx Hidden     = TopCtx
+hiddenArgumentCtx Instance{} = TopCtx
 
 -- | Do we need to bracket an operator application of the given fixity
 --   in a context with the given precedence.

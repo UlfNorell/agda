@@ -190,7 +190,7 @@ coreBuiltins =
   , (builtinAgdaDefinitionFunDef          |-> BuiltinDataCons (tlist tclause --> tdefn))
   , (builtinAgdaDefinitionDataDef         |-> BuiltinDataCons (tnat --> tlist tqname --> tdefn))
   , (builtinAgdaDefinitionDataConstructor |-> BuiltinDataCons (tqname --> tdefn))
-  , (builtinAgdaDefinitionRecordDef       |-> BuiltinDataCons (tqname --> tdefn))
+  , (builtinAgdaDefinitionRecordDef       |-> BuiltinDataCons (tqname --> tlist (targ tqname) --> tdefn))
   , (builtinAgdaDefinitionPostulate       |-> BuiltinDataCons tdefn)
   , (builtinAgdaDefinitionPrimitive       |-> BuiltinDataCons tdefn)
   , builtinAgdaTCM       |-> builtinPostulate (hPi "a" tlevel $ tsetL 0 --> tsetL 0)
@@ -221,6 +221,7 @@ coreBuiltins =
   , builtinAgdaTCMCommit             |-> builtinPostulate (tTCM_ primUnit)
   , builtinAgdaTCMIsMacro            |-> builtinPostulate (tqname --> tTCM_ primBool)
   , builtinAgdaTCMWithNormalisation  |-> builtinPostulate (hPi "a" tlevel $ hPi "A" (tsetL 0) $ tbool --> tTCM 1 (varM 0) --> tTCM 1 (varM 0))
+  , builtinAgdaTCMDebugPrint         |-> builtinPostulate (tstring --> tnat --> tlist terrorpart --> tTCM_ primUnit)
   ]
   where
         (|->) = BuiltinInfo

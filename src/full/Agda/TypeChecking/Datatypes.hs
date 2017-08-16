@@ -12,8 +12,9 @@ import Agda.TypeChecking.Monad.Builtin (constructorForm)
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Substitute
 
-import Agda.Utils.Size
+import Agda.Utils.Either
 import Agda.Utils.Functor
+import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -23,21 +24,20 @@ import Agda.Utils.Impossible
 ---------------------------------------------------------------------------
 
 -- | Get true constructor with record fields.
-getConHead :: QName -> TCM ConHead
-getConHead c = conSrcCon . theDef <$> getConstInfo c
+getConHead :: QName -> TCM (Either SigError ConHead)
+getConHead c = mapRight (conSrcCon . theDef) <$> getConstInfo' c
 
 -- | Get true constructor with fields, expanding literals to constructors
 --   if possible.
-getConForm :: QName -> TCM ConHead
-getConForm c = do
-  ch <- getConHead c
+getConForm :: QName -> TCM (Either SigError ConHead)
+getConForm c = caseEitherM (getConHead c) (return . Left) $ \ ch -> do
   Con con _ [] <- ignoreSharing <$> constructorForm (Con ch ConOCon [])
-  return con
+  return $ Right con
 
 -- | Augment constructor with record fields (preserve constructor name).
 --   The true constructor might only surface via 'reduce'.
-getOrigConHead :: QName -> TCM ConHead
-getOrigConHead c = setConName c <$> getConHead c
+getOrigConHead :: QName -> TCM (Either SigError ConHead)
+getOrigConHead c = mapRight (setConName c) <$> getConHead c
 
 -- | Get the name of the datatype constructed by a given constructor.
 --   Precondition: The argument must refer to a constructor
@@ -50,24 +50,67 @@ getConstructorData c = do
     _                        -> __IMPOSSIBLE__
 
 -- | @getConType c t@ computes the constructor parameters from type @t@
---   and returns the instantiated type of constructor @c@.
+--   and returns them plus the instantiated type of constructor @c@.
+--   This works also if @t@ is a function type ending in a data/record type;
+--   the term from which @c@ comes need not be fully applied
+--
 --   @Nothing@ if @t@ is not a data/record type or does not have
 --   a constructor @c@.
---   Precondition: @t@ is reduced.
-getConType :: ConHead -> Type -> TCM (Maybe Type)
+getConType
+  :: ConHead  -- ^ Constructor.
+  -> Type     -- ^ Ending in data/record type.
+  -> TCM (Maybe ((QName, Type, Args), Type))
+       -- ^ @Nothing@ if not ends in data or record type.
+       --
+       --   @Just ((d, dt, pars), ct)@ otherwise, where
+       --     @d@    is the data or record type name,
+       --     @dt@   is the type of the data or record name,
+       --     @pars@ are the reconstructed parameters,
+       --     @ct@   is the type of the constructor instantiated to the parameters.
 getConType c t = do
-  c <- getConHead $ conName c
+  TelV tel t <- telView t
+  -- Now @t@ lives under @tel@, we need to remove the dependency on @tel@.
+  -- This will succeed if @t@ is indeed a data/record type that is the
+  -- type of a constructor coming from a term
+  -- (applied to at least the parameters).
+  getFullyAppliedConType c $ applySubst (strengthenS __IMPOSSIBLE__ (size tel)) t
+
+-- | @getFullyAppliedConType c t@ computes the constructor parameters
+--   from data type @t@ and returns them
+--   plus the instantiated type of constructor @c@.
+--
+--   @Nothing@ if @t@ is not a data/record type or does not have
+--   a constructor @c@.
+--
+--   Precondition: @t@ is reduced.
+getFullyAppliedConType
+  :: ConHead  -- ^ Constructor.
+  -> Type     -- ^ Reduced type of the fully applied constructor.
+  -> TCM (Maybe ((QName, Type, Args), Type))
+       -- ^ @Nothing@ if not data or record type.
+       --
+       --   @Just ((d, dt, pars), ct)@ otherwise, where
+       --     @d@    is the data or record type name,
+       --     @dt@   is the type of the data or record name,
+       --     @pars@ are the reconstructed parameters,
+       --     @ct@   is the type of the constructor instantiated to the parameters.
+getFullyAppliedConType c t = do
+  c <- fromRight __IMPOSSIBLE__ <$> do getConHead $ conName c
   case ignoreSharing $ unEl t of
+    -- Note that if we come e.g. from getConType,
+    -- then the non-parameter arguments of @es@ might contain __IMPOSSIBLE__
+    -- coming from strengthening.  (Thus, printing them is not safe.)
     Def d es -> do
-      def <- theDef <$> getConstInfo d
-      case def of
+      def <- getConstInfo d
+      let cont n = do
+            -- At this point we can be sure that the parameters are well-scoped.
+            let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims $ take n es
+            Just . ((d, defType def, pars),) <$> do
+              (`piApplyM` pars) . defType =<< getConInfo c
+      case theDef def of
         Datatype { dataPars = n, dataCons   = cs  } | conName c `elem` cs -> cont n
         Record   { recPars  = n, recConHead = con } | c == con            -> cont n
         _ ->  return Nothing
-      where
-        cont n = do
-          let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims $ take n es
-          Just <$> do (`piApplyM` pars) . defType =<< getConInfo c
     _ -> return Nothing
 
 data HasEta = NoEta | YesEta
@@ -106,9 +149,6 @@ isDatatype d = do
     Datatype{}                   -> return True
     Record{recNamedCon = namedC} -> return namedC
     _                            -> return False
-
-data DataOrRecord = IsData | IsRecord
-  deriving (Eq, Ord, Show)
 
 -- | Check if a name refers to a datatype or a record.
 isDataOrRecordType :: QName -> TCM (Maybe DataOrRecord)

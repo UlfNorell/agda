@@ -334,6 +334,21 @@ As with booleans, the only effect of binding the ``LIST`` built-in is to let
 you use primitive functions working with lists, such as ``primStringToList``
 and ``primStringFromList``.
 
+..
+  ::
+  -- common functions on lists used in other files for examples
+  _++_ : ∀ {a} {A : Set a} → List A → List A → List A
+  [] ++ ys       = ys
+  (x ∷ xs) ++ ys = x ∷ (xs ++ ys)
+
+  map : ∀ {a b} {A : Set a} {B : Set b} → (A → B) → List A → List B
+  map f []       = []
+  map f (x ∷ xs) = f x ∷ map f xs
+
+  [_] : ∀ {a} {A : Set a} → A → List A
+  [ x ] = x ∷ []
+
+
 .. _built-in-char:
 
 Characters
@@ -583,6 +598,17 @@ to be confused with the :ref:`rewrite construct <with-rewrite>`) has a built-in
 
 There is no ``Agda.Builtin`` module for the rewrite relation since different
 rewriting experiments typically want different relations.
+
+Static values
+-------------
+
+The ``STATIC`` pragma can be used to mark definitions which should
+be normalised before compilation. The typical use case for this is
+to mark the interpreter of an embedded language as ``STATIC``:
+
+.. code-block:: agda
+
+   {-# STATIC <Name> #-}
 
 Strictness
 ----------

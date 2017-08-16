@@ -12,6 +12,7 @@ import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Context
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.Pretty
@@ -21,6 +22,7 @@ import Agda.TypeChecking.Telescope
 
 import Agda.Utils.Impossible
 import Agda.Utils.Functor ( ($>) )
+import Agda.Utils.Pretty ( prettyShow )
 import Agda.Utils.Monad
 import Agda.Utils.Size
 
@@ -60,7 +62,7 @@ etaExpandClause clause = liftTCM $ do
       reportSDoc "term.clause.expand" 30 $ inTopContext $ vcat
         [ text "etaExpandClause"
         , text "  body    = " <+> (addContext ctel' $ prettyTCM body)
-        , text "  xs      = " <+> text (show xs)
+        , text "  xs      = " <+> text (prettyShow xs)
         , text "  new tel = " <+> prettyTCM ctel'
         ]
       return $ Clause rl rf ctel' ps' (Just body') (Just (t $> t')) catchall
@@ -81,7 +83,7 @@ etaExpandClause clause = liftTCM $ do
     useNames []     tel       = map (setOrigin Inserted) tel
     useNames (_:_)  []        = []  -- Andreas, 2017-03-24: not IMPOSSIBLE when positivity checking comes before termination checking, see examples/tactics/ac/AC.agda
     useNames (x:xs) (dom:tel)
-      | getHiding x == getHiding dom =
+      | sameHiding x dom =
           -- set the ArgName of the dom
           fmap (first $ const $ unArg x) dom : useNames xs tel
       | otherwise =

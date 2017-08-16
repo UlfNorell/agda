@@ -28,11 +28,6 @@ import qualified Data.List as List
 import Data.Maybe
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, Sum(..))
 
--- base-4.7 defines the Num instance for Sum
-#if !(MIN_VERSION_base(4,7,0))
-import Data.Orphans             ()
-#endif
-
 import Data.Traversable
 import Data.Data (Data)
 import Data.Typeable (Typeable)
@@ -76,7 +71,7 @@ data ConHead = ConHead
                               --   Empty list for data constructors.
                               --   'Arg' is not needed here since it
                               --   is stored in the constructor args.
-  } deriving (Typeable, Data)
+  } deriving (Typeable, Data, Show)
 
 instance Eq ConHead where
   (==) = (==) `on` conName
@@ -84,8 +79,8 @@ instance Eq ConHead where
 instance Ord ConHead where
   (<=) = (<=) `on` conName
 
-instance Show ConHead where
-  show (ConHead c i fs) = show c ++ "(" ++ show i ++ ")" ++ show fs
+instance Pretty ConHead where
+  pretty = pretty . conName
 
 instance HasRange ConHead where
   getRange = getRange . conName
@@ -537,8 +532,8 @@ data Substitution' a
     -- ^ Identity substitution.
     --   @Γ ⊢ IdS : Γ@
 
-  | EmptyS
-    -- ^ Empty substitution, lifts from the empty context.
+  | EmptyS Empty
+    -- ^ Empty substitution, lifts from the empty context. First argument is @__IMPOSSIBLE__@.
     --   Apply this to closed terms you want to use in a non-empty context.
     --   @Γ ⊢ EmptyS : ()@
 
@@ -1032,7 +1027,7 @@ instance TermSize LevelAtom where
 
 instance TermSize a => TermSize (Substitution' a) where
   tsize IdS                = 1
-  tsize EmptyS             = 1
+  tsize (EmptyS _)         = 1
   tsize (Wk _ rho)         = 1 + tsize rho
   tsize (t :# rho)         = 1 + tsize t + tsize rho
   tsize (Strengthen _ rho) = 1 + tsize rho
@@ -1086,7 +1081,7 @@ instance KillRange Sort where
 
 instance KillRange Substitution where
   killRange IdS                  = IdS
-  killRange EmptyS               = EmptyS
+  killRange (EmptyS err)         = EmptyS err
   killRange (Wk n rho)           = killRange1 (Wk n) rho
   killRange (t :# rho)           = killRange2 (:#) t rho
   killRange (Strengthen err rho) = killRange1 (Strengthen err) rho
@@ -1145,7 +1140,7 @@ instance Pretty a => Pretty (Substitution' a) where
     where
     pr p rho = case rho of
       IdS              -> text "idS"
-      EmptyS           -> text "emptyS"
+      EmptyS err       -> text "emptyS"
       t :# rho         -> mparens (p > 2) $ sep [ pr 2 rho P.<> text ",", prettyPrec 3 t ]
       Strengthen _ rho -> mparens (p > 9) $ text "strS" <+> pr 10 rho
       Wk n rho         -> mparens (p > 9) $ text ("wkS " ++ show n) <+> pr 10 rho
@@ -1157,11 +1152,11 @@ instance Pretty Term where
       Var x els -> text ("@" ++ show x) `pApp` els
       Lam ai b   ->
         mparens (p > 0) $
-        sep [ text "λ" <+> prettyHiding ai id (text . show . absName $ b) <+> text "->"
+        sep [ text "λ" <+> prettyHiding ai id (text . absName $ b) <+> text "->"
             , nest 2 $ pretty (unAbs b) ]
       Lit l                -> pretty l
-      Def q els            -> text (show q) `pApp` els
-      Con c ci vs          -> text (show $ conName c) `pApp` map Apply vs
+      Def q els            -> pretty q `pApp` els
+      Con c ci vs          -> pretty (conName c) `pApp` map Apply vs
       Pi a (NoAbs _ b)     -> mparens (p > 0) $
         sep [ prettyPrec 1 (unDom a) <+> text "->"
             , nest 2 $ pretty b ]
@@ -1183,9 +1178,9 @@ instance Pretty Term where
 pDom :: LensHiding a => a -> Doc -> Doc
 pDom i =
   case getHiding i of
-    NotHidden -> parens
-    Hidden    -> braces
-    Instance  -> braces . braces
+    NotHidden  -> parens
+    Hidden     -> braces
+    Instance{} -> braces . braces
 
 instance Pretty Clause where
   pretty Clause{clauseTel = tel, namedClausePats = ps, clauseBody = b, clauseType = t} =
@@ -1238,15 +1233,15 @@ instance Pretty Sort where
       SizeUniv -> text "SizeUniv"
       DLub s b -> mparens (p > 9) $
         text "dlub" <+> prettyPrec 10 s
-                    <+> parens (sep [ text ("λ " ++ show (absName b) ++ " ->")
+                    <+> parens (sep [ text ("λ " ++ absName b ++ " ->")
                                     , nest 2 $ pretty (unAbs b) ])
 
 instance Pretty Type where
   prettyPrec p (El _ a) = prettyPrec p a
 
-instance Pretty Elim where
+instance Pretty tm => Pretty (Elim' tm) where
   prettyPrec p (Apply v)    = prettyPrec p v
-  prettyPrec _ (Proj _o x)  = text ("." ++ show x)
+  prettyPrec _ (Proj _o x)  = text ("." ++ prettyShow x)
 
 instance Pretty DBPatVar where
   prettyPrec _ x = text $ patVarNameToString (dbPatVarName x) ++ "@" ++ show (dbPatVarIndex x)
@@ -1256,7 +1251,7 @@ instance Pretty a => Pretty (Pattern' a) where
   prettyPrec _ (DotP t)      = text "." P.<> prettyPrec 10 t
   prettyPrec _ (AbsurdP _)   = text "()"
   prettyPrec n (ConP c i nps)= mparens (n > 0) $
-    text (show $ conName c) <+> fsep (map pretty ps)
+    pretty (conName c) <+> fsep (map pretty ps)
     where ps = map (fmap namedThing) nps
   -- -- Version with printing record type:
   -- prettyPrec _ (ConP c i ps) = (if b then braces else parens) $ prTy $
@@ -1264,8 +1259,8 @@ instance Pretty a => Pretty (Pattern' a) where
   --   where
   --     b = maybe False (== ConOSystem) $ conPRecord i
   --     prTy d = caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> pretty t
-  prettyPrec _ (LitP l)      = text (show l)
-  prettyPrec _ (ProjP _o q)  = text ("." ++ show q)
+  prettyPrec _ (LitP l)      = pretty l
+  prettyPrec _ (ProjP _o q)  = text ("." ++ prettyShow q)
 
 -----------------------------------------------------------------------------
 -- * NFData instances
@@ -1319,7 +1314,7 @@ instance NFData a => NFData (Elim' a) where
 instance NFData a => NFData (Substitution' a) where
   rnf s = case s of
     IdS              -> ()
-    EmptyS           -> ()
+    EmptyS _         -> ()
     t :# rho         -> rnf (t, rho)
     Strengthen _ rho -> rnf rho
     Wk n rho         -> rnf (n, rho)

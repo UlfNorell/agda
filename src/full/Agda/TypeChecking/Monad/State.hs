@@ -33,6 +33,7 @@ import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Monad.Base
+import {-# SOURCE #-} Agda.TypeChecking.Monad.Debug
 import {-# SOURCE #-} Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.CompiledClause
@@ -191,7 +192,7 @@ notInScope x = do
 printScope :: String -> Int -> String -> TCM ()
 printScope tag v s = verboseS ("scope." ++ tag) v $ do
   scope <- getScope
-  reportSDoc ("scope." ++ tag) v $ return $ vcat [ text s, text $ show scope ]
+  reportSDoc ("scope." ++ tag) v $ return $ vcat [ text s, pretty scope ]
 
 ---------------------------------------------------------------------------
 -- * Signature
@@ -293,7 +294,7 @@ updateFunCopatternLHS f _ = __IMPOSSIBLE__
 -- implementation of 'setTopLevelModule' should be changed.
 
 setTopLevelModule :: C.QName -> TCM ()
-setTopLevelModule x = stFreshNameId .= NameId 0 (hashString (show x))
+setTopLevelModule x = stFreshNameId .= NameId 0 (hashString $ prettyShow x)
 
 -- | Use a different top-level module for a computation. Used when generating
 --   names for imported modules.
@@ -352,7 +353,7 @@ getInteractionOutputCallback
 
 appInteractionOutputCallback :: Response -> TCM ()
 appInteractionOutputCallback r
-  = getInteractionOutputCallback >>= \ cb -> cb r
+  = getInteractionOutputCallback >>= \ cb -> liftIO $ cb r
 
 setInteractionOutputCallback :: InteractionOutputCallback -> TCM ()
 setInteractionOutputCallback cb
@@ -442,7 +443,9 @@ clearAnonInstanceDefs = modifyInstanceDefs $ mapSnd $ const Set.empty
 -- | Add an instance whose type is still unresolved.
 addUnknownInstance :: QName -> TCM ()
 addUnknownInstance x = do
-  reportSLn "tc.decl.instance" 10 $ "adding definition " ++ show x ++ " to the instance table (the type is not yet known)"
+  reportSLn "tc.decl.instance" 10 $
+    "adding definition " ++ prettyShow x ++
+    " to the instance table (the type is not yet known)"
   modifyInstanceDefs $ mapSnd $ Set.insert x
 
 -- | Add instance to some ``class''.
@@ -451,7 +454,8 @@ addNamedInstance
   -> QName  -- ^ Name of the class.
   -> TCM ()
 addNamedInstance x n = do
-  reportSLn "tc.decl.instance" 10 $ ("adding definition " ++ show x ++ " to instance table for " ++ show n)
+  reportSLn "tc.decl.instance" 10 $
+    "adding definition " ++ prettyShow x ++ " to instance table for " ++ prettyShow n
   -- Mark x as instance for n.
   modifySignature $ updateDefinition x $ \ d -> d { defInstance = Just n }
   -- Add x to n's instances.

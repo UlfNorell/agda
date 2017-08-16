@@ -8,7 +8,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.List as List
+import qualified Data.List as List
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
@@ -60,9 +60,9 @@ initialIFSCandidates t = do
       reportSDoc "tc.instance.cands" 40 $ hang (text "Getting candidates from context") 2 (inTopContext $ prettyTCM ctx)
           -- Context variables with their types lifted to live in the full context
       let varsAndRaisedTypes = [ (var i, raise (i + 1) t) | (i, t) <- zip [0..] ctx ]
-          vars = [ Candidate x t ExplicitStayExplicit (argInfoOverlappable info)
+          vars = [ Candidate x t ExplicitStayExplicit (isOverlappable info)
                  | (x, Dom info (_, t)) <- varsAndRaisedTypes
-                 , getHiding info == Instance
+                 , isInstance info
                  , not (unusableRelevance $ argInfoRelevance info)
                  ]
 
@@ -84,7 +84,7 @@ initialIFSCandidates t = do
       env <- mapM (getOpen . snd) $ Map.toList env
       let lets = [ Candidate v t ExplicitStayExplicit False
                  | (v, Dom info t) <- env
-                 , getHiding info == Instance
+                 , isInstance info
                  , not (unusableRelevance $ argInfoRelevance info)
                  ]
       return $ vars ++ fields ++ lets
@@ -98,7 +98,7 @@ initialIFSCandidates t = do
               m <- currentModule
               -- Are we inside the record module? If so it's safe and desirable
               -- to eta-expand once (issue #2320).
-              if qnameToList r `isPrefixOf` mnameToList m
+              if qnameToList r `List.isPrefixOf` mnameToList m
                 then return (Just (r, vs))
                 else return Nothing
         r -> return r
@@ -109,8 +109,8 @@ initialIFSCandidates t = do
         (tel, args) <- forceEtaExpandRecord r pars v
         let types = map unDom $ applySubst (parallelS $ reverse $ map unArg args) (flattenTel tel)
         fmap concat $ forM (zip args types) $ \ (arg, t) ->
-          ([ Candidate (unArg arg) t ExplicitStayExplicit (argInfoOverlappable $ argInfo arg)
-           | getHiding arg == Instance ] ++) <$>
+          ([ Candidate (unArg arg) t ExplicitStayExplicit (isOverlappable arg)
+           | isInstance arg ] ++) <$>
           instanceFields' False (unArg arg, t)
 
     getScopeDefs :: QName -> TCM [Candidate]
@@ -173,7 +173,9 @@ findInScope m Nothing = do
     TelV tel t <- telView t
     cands <- addContext' tel $ initialIFSCandidates t
     case cands of
-      Nothing -> addConstraint $ FindInScope m Nothing Nothing
+      Nothing -> do
+        reportSLn "tc.instance" 20 "Can't figure out target of instance goal. Postponing constraint."
+        addConstraint $ FindInScope m Nothing Nothing
       Just {} -> findInScope m cands
 
 findInScope m (Just cands) =
@@ -182,11 +184,13 @@ findInScope m (Just cands) =
 -- | Result says whether we need to add constraint, and if so, the set of
 --   remaining candidates and an eventual blocking metavariable.
 findInScope' :: MetaId -> [Candidate] -> TCM (Maybe ([Candidate], Maybe MetaId))
-findInScope' m cands = ifM (isFrozen m) (return (Just (cands, Nothing))) $ do
+findInScope' m cands = ifM (isFrozen m) (do
+    reportSLn "tc.instance" 20 "Refusing to solve frozen instance meta."
+    return (Just (cands, Nothing))) $ do
   -- Andreas, 2013-12-28 issue 1003:
   -- If instance meta is already solved, simply discard the constraint.
   -- Ulf, 2016-12-06 issue 2325: But only if *fully* instantiated.
-  ifM (isFullyInstantiatedMeta m) (return Nothing) $ do
+  ifM (isFullyInstantiatedMeta m) (Nothing <$ reportSLn "tc.instance" 20 "Instance meta already solved.") $ do
     -- Andreas, 2015-02-07: New metas should be created with range of the
     -- current instance meta, thus, we set the range.
     mv <- lookupMeta m
@@ -401,13 +405,13 @@ filterResetingState m cands f = disableDestructiveUpdate $ do
 -- Drop all candidates which are judgmentally equal to the first one.
 -- This is sufficient to reduce the list to a singleton should all be equal.
 dropSameCandidates :: MetaId -> [(Candidate, Term, Type, a)] -> TCM [(Candidate, Term, Type, a)]
-dropSameCandidates m cands0 = do
+dropSameCandidates m cands0 = verboseBracket "tc.instance" 30 "dropSameCandidates" $ do
   metas <- Set.fromList . Map.keys <$> getMetaStore
   let freshMetas x = not $ Set.null $ Set.difference (Set.fromList $ allMetas x) metas
 
   -- Take overlappable candidates into account
   let cands =
-        case partition (\ (c, _, _, _) -> candidateOverlappable c) cands0 of
+        case List.partition (\ (c, _, _, _) -> candidateOverlappable c) cands0 of
           (cand : _, []) -> [cand]  -- only overlappable candidates: pick the first one
           _              -> cands0  -- otherwise require equality
 
@@ -419,16 +423,18 @@ dropSameCandidates m cands0 = do
   rel <- getMetaRelevance <$> lookupMeta m
   case cands of
     []            -> return cands
+    cvd : _ | isIrrelevant rel -> do
+      reportSLn "tc.instance" 30 "Meta is irrelevant so any candidate will do."
+      return [cvd]
     cvd@(_, v, a, _) : vas -> do
         if freshMetas (v, a)
           then return (cvd : vas)
           else (cvd :) <$> dropWhileM equal vas
       where
-        equal _ | isIrrelevant rel = return True
         equal (_, v', a', _)
             | freshMetas (v', a') = return False  -- If there are fresh metas we can't compare
             | otherwise           =
-          verboseBracket "tc.instance" 30 "checkEqualCandidates" $ do
+          verboseBracket "tc.instance" 30 "comparingCandidates" $ do
           reportSDoc "tc.instance" 30 $ sep [ prettyTCM v <+> text "==", nest 2 $ prettyTCM v' ]
           localTCState $ dontAssignMetas $ ifNoConstraints_ (equalType a a' >> equalTerm a v v')
                              {- then -} (return True)
@@ -485,7 +491,7 @@ checkCandidates m t cands = disableDestructiveUpdate $
         debugConstraints
         verboseBracket "tc.instance" 20 ("checkCandidateForMeta " ++ prettyShow m) $
           liftTCM $ runCandidateCheck $ do
-            reportSLn "tc.instance" 70 $ "  t: " ++ show t ++ "\n  t':" ++ show t' ++ "\n  term: " ++ show term ++ "."
+            reportSLn "tc.instance" 70 $ "  t: " ++ prettyShow t ++ "\n  t':" ++ prettyShow t' ++ "\n  term: " ++ prettyShow term ++ "."
             reportSDoc "tc.instance" 20 $ vcat
               [ text "checkCandidateForMeta"
               , text "t    =" <+> prettyTCM t
@@ -494,7 +500,7 @@ checkCandidates m t cands = disableDestructiveUpdate $
               ]
 
             -- Apply hidden and instance arguments (recursive inst. search!).
-            (args, t'') <- implicitArgs (-1) (\h -> h /= NotHidden || eti == ExplicitToInstance) t'
+            (args, t'') <- implicitArgs (-1) (\h -> notVisible h || eti == ExplicitToInstance) t'
 
             reportSDoc "tc.instance" 20 $
               text "instance search: checking" <+> prettyTCM t''
@@ -575,7 +581,7 @@ applyDroppingParameters t vs = do
     Con c ci [] -> do
       def <- theDef <$> getConInfo c
       case def of
-        Constructor {conPars = n} -> return $ Con c ci (genericDrop n vs)
+        Constructor {conPars = n} -> return $ Con c ci (drop n vs)
         _ -> __IMPOSSIBLE__
     Def f [] -> do
       mp <- isProjection f

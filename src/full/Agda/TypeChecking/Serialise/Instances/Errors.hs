@@ -18,6 +18,7 @@ import Agda.TypeChecking.Serialise.Instances.Internal ()
 import Agda.TypeChecking.Serialise.Instances.Abstract ()
 
 import Agda.Syntax.Common
+import Agda.Syntax.Concrete.Definitions (DeclarationWarning(..))
 import Agda.Syntax.Abstract.Name (ModuleName)
 import Agda.TypeChecking.Monad.Base
 import Agda.Interaction.Options
@@ -62,16 +63,36 @@ instance EmbPrj Warning where
   icod_ SafeFlagPolarity             = __IMPOSSIBLE__
   icod_ (ParseWarning a)             = __IMPOSSIBLE__
   icod_ (DeprecationWarning a b c)   = icodeN 6 DeprecationWarning a b c
+  icod_ (NicifierIssue a)            = icodeN 7 NicifierIssue a
 
   value = vcase valu where
-      valu [0, a, b]     = valuN UnreachableClauses a b
-      valu [1, a, b]     = valuN OldBuiltin a b
-      valu [2]           = valuN EmptyRewritePragma
+      valu [0, a, b]    = valuN UnreachableClauses a b
+      valu [1, a, b]    = valuN OldBuiltin a b
+      valu [2]          = valuN EmptyRewritePragma
       valu [3]          = valuN UselessPublic
       valu [4, a]       = valuN UselessInline a
       valu [5, a]       = valuN GenericWarning a
       valu [6, a, b, c] = valuN DeprecationWarning a b c
-      valu _             = malformed
+      valu [7, a]       = valuN NicifierIssue a
+      valu _ = malformed
+
+instance EmbPrj DeclarationWarning where
+  icod_ = \case
+    UnknownNamesInFixityDecl a        -> icodeN 0 UnknownNamesInFixityDecl a
+    UnknownNamesInPolarityPragmas a   -> icodeN 1 UnknownNamesInPolarityPragmas a
+    PolarityPragmasButNotPostulates a -> icodeN 2 PolarityPragmasButNotPostulates a
+    UselessPrivate a                  -> icodeN 3 UselessPrivate a
+    UselessAbstract a                 -> icodeN 4 UselessAbstract a
+    UselessInstance a                 -> icodeN 5 UselessInstance a
+
+  value = vcase $ \case
+    [0, a] -> valueN UnknownNamesInFixityDecl a
+    [1, a] -> valueN UnknownNamesInPolarityPragmas a
+    [2, a] -> valueN PolarityPragmasButNotPostulates a
+    [3, a] -> valueN UselessPrivate a
+    [4, a] -> valueN UselessAbstract a
+    [5, a] -> valueN UselessInstance a
+    _ -> malformed
 
 instance EmbPrj Doc where
   icod_ d = icodeN' (undefined :: String -> Doc) (render d)
@@ -99,12 +120,19 @@ instance EmbPrj TCEnv where
                  }
 
 instance EmbPrj TCState where
-  icod_ st = icodeN' (undefined :: Signature -> ModuleToSource -> PragmaOptions
+  icod_ st = icodeN' (undefined :: Signature -> PragmaOptions
                                 -> BuiltinThings PrimFun -> MetaStore
                                 -> InteractionPoints -> Signature
                                 -> BuiltinThings PrimFun -> TCState)
                      (st ^. stImports)
-                     (st ^. stModuleToSource)
+
+-- FNF 2017-06-13: Experiments when implementing serialising warnings
+-- suggested that we needed to serialise the ModuleToSource stored in
+-- the state for printing warnings stored in interface files, but this
+-- does not seem needed, and caused Issue 2592; hence the following
+-- line is now commented out.
+
+--                     (st ^. stModuleToSource)
                      (st ^. stPragmaOptions)
                      (st ^. stImportedBuiltins)
                      (st ^. stMetaStore)
@@ -112,9 +140,9 @@ instance EmbPrj TCState where
                      (st ^. stSignature)
                      (st ^. stLocalBuiltins)
 
-  value = valueN (\ a b c d e f g h ->
+  value = valueN (\ a c d e f g h ->
                      set stImports           a $
-                     set stModuleToSource    b $
+--                     set stModuleToSource    b $
                      set stPragmaOptions     c $
                      set stImportedBuiltins  d $
                      set stMetaStore         e $
@@ -130,10 +158,22 @@ instance EmbPrj InteractionId where
 
 instance EmbPrj PragmaOptions where
   -- TODO: only keep the options needed for displaying the warnings
-  icod_ (PragmaOptions a b c d e f g h i j k l m n o p q r s t u v w x y) =
-    icodeN' PragmaOptions a b c d e f g h i j k l m n o p q r s t u v w x y
+  icod_ (PragmaOptions a b c d e f g h i j k l m n o p q r s t u v w x y z) =
+    icodeN' PragmaOptions a b c d e f g h i j k l m n o p q r s t u v w x y z
 
   value = valueN PragmaOptions
+
+instance EmbPrj WarningMode where
+  icod_ LeaveAlone        = icodeN 0 LeaveAlone
+  icod_ TurnIntoErrors    = icodeN 1 TurnIntoErrors
+  icod_ IgnoreAllWarnings = icodeN 2 IgnoreAllWarnings
+
+  value = vcase valu where
+    valu [0] = valuN LeaveAlone
+    valu [1] = valuN TurnIntoErrors
+    valu [2] = valuN IgnoreAllWarnings
+    valu _   = malformed
+
 
 instance EmbPrj PrimFun where
   -- don't need implementation for the warnings
@@ -193,4 +233,3 @@ instance EmbPrj ModuleParameters where
   icod_ (ModuleParams a) = icodeN' ModuleParams a
 
   value = valueN ModuleParams
-

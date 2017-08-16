@@ -24,7 +24,7 @@ import Control.Monad.STM
 import qualified Data.Char as Char
 import Data.Foldable (Foldable)
 import Data.Function
-import Data.List as List hiding (null)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -303,17 +303,18 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
         constr  <- lift $ computeUnsolvedConstraints
         err     <- lift $ errorHighlighting e
         modFile <- lift $ use stModuleToSource
+        method  <- lift $ view eHighlightingMethod
         let info = compress $ mconcat $
                      -- Errors take precedence over unsolved things.
                      err : if unsolvedNotOK then [meta, constr] else []
         s1 <- lift $ prettyError e
         s2 <- lift $ prettyTCWarnings' =<< Imp.errorWarningsOfTCErr e
-        let s = intercalate "\n" $ filter (not . null) $ s1 : s2
+        let s = List.intercalate "\n" $ filter (not . null) $ s1 : s2
         x <- lift $ optShowImplicit <$> use stPragmaOptions
         unless (null s1) $ mapM_ putResponse $
             [ Resp_DisplayInfo $ Info_Error s ] ++
             tellEmacsToJumpToError (getRange e) ++
-            [ Resp_HighlightingInfo info modFile ] ++
+            [ Resp_HighlightingInfo info method modFile ] ++
             [ Resp_Status $ Status { sChecked = False
                                    , sShowImplicitArguments = x
                                    } ]
@@ -618,7 +619,7 @@ parseToReadsPrec p i s = case runIdentity . flip runStateT s . runExceptT $ pare
 -- | Demand an exact string.
 
 exact :: String -> Parse ()
-exact s = readsToParse (show s) $ fmap (\x -> ((),x)) . stripPrefix s . dropWhile (==' ')
+exact s = readsToParse (show s) $ fmap (\x -> ((),x)) . List.stripPrefix s . dropWhile (==' ')
 
 readParse :: Read a => Parse a
 readParse = readsToParse "read failed" $ listToMaybe . reads
@@ -783,7 +784,8 @@ interpret (Cmd_load_highlighting_info source) = do
               if sourceH == iSourceHash (miInterface mi)
                then do
                 modFile <- use stModuleToSource
-                return $ Just (iHighlighting $ miInterface mi, modFile)
+                method  <- view eHighlightingMethod
+                return $ Just (iHighlighting $ miInterface mi, method, modFile)
                else
                 return Nothing
     mapM_ putResponse resp
@@ -838,9 +840,9 @@ interpret (Cmd_auto ii rng s) = do
   st <- lift $ get
   (time , res) <- maybeTimed $ lift $ Auto.auto ii rng s
   case autoProgress res of
-   Solutions xs -> do
-    lift $ reportSLn "auto" 10 $ "Auto produced the following solutions " ++ show xs
-    forM_ xs $ \(ii, s) -> do
+   Solutions sols -> do
+    lift $ reportSLn "auto" 10 $ "Auto produced the following solutions " ++ show sols
+    forM_ sols $ \(ii, s) -> do
       -- Andreas, 2014-07-05 Issue 1226:
       -- For highlighting, Resp_GiveAction needs to access
       -- the @oldInteractionScope@s of the interaction points solved by Auto.
@@ -852,7 +854,7 @@ interpret (Cmd_auto ii rng s) = do
       -- modifyTheInteractionPoints $ filter (/= ii)
       putResponse $ Resp_GiveAction ii $ Give_String s
     -- Andreas, 2014-07-07: Remove the interaction points in one go.
-    modifyTheInteractionPoints (\\ (map fst xs))
+    modifyTheInteractionPoints (List.\\ (map fst sols))
     case autoMessage res of
      Nothing  -> interpret Cmd_metas
      Just msg -> display_info $ Info_Auto msg
@@ -1156,7 +1158,7 @@ give_gen ii rng s0 giveRefine = do
         ae    <- give_ref ii Nothing given
         mis' <- getInteractionPoints
         reportSLn "interaction.give" 30 $ "interaction points after = " ++ show mis'
-        return (ae, given, mis' \\ mis)
+        return (ae, given, mis' List.\\ mis)
     -- favonia: backup the old scope for highlighting
     insertOldInteractionScope ii scope
     -- sort the new interaction points and put them into the state
@@ -1215,7 +1217,7 @@ highlightExpr e =
 
 sortInteractionPoints :: [InteractionId] -> TCM [InteractionId]
 sortInteractionPoints is =
-  map fst . sortBy (compare `on` snd) <$> do
+  map fst . List.sortBy (compare `on` snd) <$> do
     forM is $ \ i -> do
       (i,) <$> getInteractionRange i
 
@@ -1275,7 +1277,7 @@ showModuleContents norm rng s = display_info . Info_ModuleContents =<< do
     (modules, types) <- B.moduleContents norm rng s
     types' <- forM types $ \ (x, t) -> do
       t <- TCP.prettyTCM t
-      return (show x, text ":" <+> t)
+      return (prettyShow x, text ":" <+> t)
     return $ vcat
       [ text "Modules"
       , nest 2 $ vcat $ map (text . show) modules
@@ -1294,9 +1296,9 @@ searchAbout norm rg nm = do
        hits <- findMentions norm rg tnm
        forM hits $ \ (x, t) -> do
          t <- TCP.prettyTCM t
-         return (show x, text ":" <+> t)
+         return (prettyShow x, text ":" <+> t)
     display_info $ Info_SearchAbout $
-      text "Definitions about" <+> text (intercalate ", " $ words nm) $$
+      text "Definitions about" <+> text (List.intercalate ", " $ words nm) $$
       nest 2 (align 10 fancy)
 
 -- | Explain why something is in scope.
@@ -1474,10 +1476,10 @@ maybeTimed work = do
 -- info (unless it is @Nothing@).
 
 tellToUpdateHighlighting
-  :: Maybe (HighlightingInfo, ModuleToSource) -> IO [Response]
+  :: Maybe (HighlightingInfo, HighlightingMethod, ModuleToSource) -> IO [Response]
 tellToUpdateHighlighting Nothing                = return []
-tellToUpdateHighlighting (Just (info, modFile)) =
-  return [Resp_HighlightingInfo info modFile]
+tellToUpdateHighlighting (Just (info, method, modFile)) =
+  return [Resp_HighlightingInfo info method modFile]
 
 -- | Tells the Emacs mode to go to the first error position (if any).
 

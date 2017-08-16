@@ -47,6 +47,7 @@ import Agda.TypeChecking.Positivity.Occurrence
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Concrete (FieldAssignment'(..))
 import qualified Agda.Syntax.Common as Common
+import qualified Agda.Syntax.Concrete.Name as C
 import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Fixity
 import qualified Agda.Syntax.Info as SI
@@ -64,6 +65,7 @@ import Agda.Utils.List
 import Agda.Utils.Maybe
 import qualified Agda.Utils.Maybe.Strict as Strict
 import Agda.Utils.Null
+import Agda.Utils.Pretty
 import Agda.Utils.HashMap (HashMap)
 import qualified Agda.Utils.HashMap as HMap
 
@@ -109,14 +111,17 @@ highlightAsTypeChecked rPre r m
 -- | Lispify and print the given highlighting information.
 
 printHighlightingInfo :: MonadTCM tcm => HighlightingInfo -> tcm ()
-printHighlightingInfo x = do
+printHighlightingInfo info = do
   modToSrc <- use stModuleToSource
-  liftTCM $ reportSLn "highlighting" 50 $
-    "Printing highlighting info:\n" ++ show x ++ "\n" ++
-    "  modToSrc = " ++ show modToSrc
-  unless (null $ ranges x) $ do
+  method   <- view eHighlightingMethod
+  liftTCM $ reportSLn "highlighting" 50 $ unlines
+    [ "Printing highlighting info:"
+    , show info
+    , "  modToSrc = " ++ show modToSrc
+    ]
+  unless (null $ ranges info) $ do
     liftTCM $ appInteractionOutputCallback $
-        Resp_HighlightingInfo x modToSrc
+        Resp_HighlightingInfo info method modToSrc
 
 -- | Highlighting levels.
 
@@ -156,7 +161,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
             Partial {} -> "(first approximation)"
         ++ "."
 
-  reportSLn "highlighting.names" 60 $ "highlighting names = " ++ show names
+  reportSLn "highlighting.names" 60 $ "highlighting names = " ++ prettyShow names
 
   M.ignoreAbstractMode $ do
     modMap <- sourceToModule
@@ -250,12 +255,14 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
                           (\isOp -> mempty { aspect = Just $ Name (Just Module) isOp })
                           Nothing
 
+    -- For top level modules, we set the binding site to the beginning of the file
+    -- so that clicking on an imported module will jump to the beginning of the file
+    -- which defines this module.
     mod isTopLevelModule n =
       nameToFile modMap file []
                  (A.nameConcrete n) P.noRange
                  (\isOp -> mempty { aspect = Just $ Name (Just Module) isOp })
-                 (Just $ (if isTopLevelModule then P.beginningOfFile else id)
-                           (A.nameBindingSite n))
+                 (Just $ applyWhen isTopLevelModule P.beginningOfFile $ A.nameBindingSite n)
 
     getVarAndField :: A.Expr -> File
     getVarAndField (A.Var x)            = bound x
@@ -433,7 +440,7 @@ nameKinds hlLevel decl = do
   defnToKind   M.Record{}                          = Record
   defnToKind   M.Constructor{ M.conInd = i }       = Constructor i
   defnToKind   M.Primitive{}                       = Primitive
-  defnToKind   M.AbstractDefn                      = __IMPOSSIBLE__
+  defnToKind   M.AbstractDefn{}                    = __IMPOSSIBLE__
 
   declToKind :: A.Declaration ->
                 HashMap A.QName NameKind -> HashMap A.QName NameKind
@@ -565,7 +572,7 @@ warningHighlighting w = case tcWarning w of
   SafeFlagNoPositivityCheck  -> mempty
   SafeFlagPolarity           -> mempty
   DeprecationWarning{}       -> mempty
-
+  NicifierIssue{}            -> mempty
 
 -- | Generate syntax highlighting for termination errors.
 
@@ -694,17 +701,59 @@ nameToFile modMap file xs x fr m mR =
   -- We don't care if we get any funny ranges.
   if all (== Strict.Just file) fileNames then
     several (map rToR rs)
-            ((m $ C.isOperator x) { definitionSite = mFilePos })
+            (aspects { definitionSite = mFilePos })
    else
     mempty
   where
+  aspects    = m $ C.isOperator x
   fileNames  = catMaybes $ map (fmap P.srcFile . P.rStart . P.getRange) (x : xs)
   rs         = applyWhen (not $ null fr) (fr :) $ map P.getRange (x : xs)
+
+  mFilePos  :: Maybe DefinitionSite
   mFilePos   = do
     r <- mR
     P.Pn { P.srcFile = Strict.Just f, P.posPos = p } <- P.rStart r
     mod <- Map.lookup f modMap
-    return (mod, fromIntegral p)
+    -- Andreas, 2017-06-16, Issue #2604: Symbolic anchors.
+    -- We drop the file name part from the qualifiers, since
+    -- this is contained in the html file name already.
+    -- We want to get anchors of the form:
+    -- @<a name="TopLevelModule.html#LocalModule.NestedModule.identifier">@
+    let qualifiers = drop (length $ C.moduleNameParts mod) xs
+    -- For bound variables, we do not create symbolic anchors.
+        local = maybe True isLocalAspect $ aspect aspects
+    return $ DefinitionSite
+      { defSiteModule = mod
+      , defSitePos    = fromIntegral p
+        -- Is our current position the definition site?
+      , defSiteHere   = r == P.getRange x
+        -- For bound variables etc. we do not create a symbolic anchor name.
+        -- Also not for names that include anonymous modules,
+        -- otherwise, we do not get unique anchors.
+      , defSiteAnchor = if local || C.isNoName x || any Common.isUnderscore qualifiers
+          then Nothing
+          else Just $ prettyShow $ foldr C.Qual (C.QName x) qualifiers
+      }
+
+  -- Is the name a bound variable or similar? If in doubt, yes.
+  isLocalAspect :: Aspect -> Bool
+  isLocalAspect = \case
+    Name mkind _ -> maybe True isLocal mkind
+    _ -> True
+  isLocal :: NameKind -> Bool
+  isLocal = \case
+    Bound         -> True
+    Argument      -> True
+    Constructor{} -> False
+    Datatype      -> False
+    Field         -> False
+    Function      -> False
+    Module        -> False
+    Postulate     -> False
+    Primitive     -> False
+    Record        -> False
+    Macro         -> False
+
 
 -- | A variant of 'nameToFile' for qualified abstract names.
 

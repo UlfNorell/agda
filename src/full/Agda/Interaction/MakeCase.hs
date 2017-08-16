@@ -36,6 +36,7 @@ import Agda.TheTypeChecker
 import Agda.Interaction.Options
 import Agda.Interaction.BasicOps
 
+import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Lens
 import Agda.Utils.List
@@ -165,7 +166,7 @@ getClauseForIP f clauseNo = do
 
 -- | Entry point for case splitting tactic.
 
-makeCase :: InteractionId -> Range -> String -> TCM (QName, CaseContext , [A.Clause])
+makeCase :: InteractionId -> Range -> String -> TCM (QName, CaseContext, [A.Clause])
 makeCase hole rng s = withInteractionId hole $ do
 
   -- Get function clause which contains the interaction point.
@@ -195,9 +196,21 @@ makeCase hole rng s = withInteractionId hole $ do
 
   let vars = words s
 
+  -- If the user just entered ".", do nothing.
+  -- This will expand an ellipsis, if present.
+
+  if concat vars == "." then do
+    cl <- makeAbstractClause f rhs $ clauseToSplitClause clause
+    return (f, casectxt, [cl])
+
   -- If we have no split variables, split on result.
 
-  if null vars then do
+  else if null vars then do
+    -- Andreas, 2017-07-24, issue #2654:
+    -- When we introduce projection patterns in an extended lambda,
+    -- we need to print them postfix.
+    let postProjInExtLam = applyWhen (isJust casectxt) $
+          withPragmaOptions $ \ opt -> opt { optPostfixProjections = True }
     (piTel, sc) <- fixTarget $ clauseToSplitClause clause
     -- Andreas, 2015-05-05 If we introduced new function arguments
     -- do not split on result.  This might be more what the user wants.
@@ -210,7 +223,7 @@ makeCase hole rng s = withInteractionId hole $ do
       -- if any of them is shown by the printer
       imp <- optShowImplicit <$> pragmaOptions
       return $ imp || any visible (telToList piTel)
-    scs <- if newPats then return [sc] else do
+    scs <- if newPats then return [sc] else postProjInExtLam $ do
       res <- splitResult f sc
       case res of
         Nothing  -> typeError $ GenericError $ "Cannot split on result here"
@@ -250,7 +263,7 @@ makeCase hole rng s = withInteractionId hole $ do
   split :: QName -> [Nat] -> SplitClause -> TCM [(SplitClause, Bool)]
   split f [] clause = return [(clause,False)]
   split f (var : vars) clause = do
-    z <- splitClauseWithAbsurd clause var
+    z <- dontAssignMetas $ splitClauseWithAbsurd clause var
     case z of
       Left err          -> typeError $ SplitError err
       Right (Left cl)   -> return [(cl,True)]

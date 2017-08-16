@@ -8,7 +8,7 @@ import Prelude hiding (mapM)
 import Control.Monad.Reader hiding (mapM)
 import Control.Applicative
 
-import Data.List as List hiding (sort)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Map (Map)
 import Data.Traversable
@@ -332,7 +332,7 @@ maybeFastReduceTerm v = do
                  else do
     s <- optSharing   <$> commandLineOptions
     allowed <- asks envAllowedReductions
-    let notAll = delete NonTerminatingReductions allowed /= allReductions
+    let notAll = List.delete NonTerminatingReductions allowed /= allReductions
     if s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
 
 slowReduceTerm :: Term -> ReduceM (Blocked Term)
@@ -428,7 +428,7 @@ unfoldDefinitionStep :: Bool -> Term -> QName -> Elims -> ReduceM (Reduced (Bloc
 unfoldDefinitionStep unfoldDelayed v0 f es =
   {-# SCC "reduceDef" #-} do
   info <- getConstInfo f
-  rewr <- getRewriteRulesFor f
+  rewr <- instantiateRewriteRules =<< getRewriteRulesFor f
   allowed <- asks envAllowedReductions
   let def = theDef info
       v   = v0 `applyE` es
@@ -468,10 +468,10 @@ unfoldDefinitionStep unfoldDelayed v0 f es =
     noReduction    = return . NoReduction
     yesReduction s = return . YesReduction s
     reducePrimitive x v0 f es pf dontUnfold cls mcc rewr
-      | genericLength es < ar
+      | length es < ar
                   = noReduction $ NotBlocked Underapplied $ v0 `applyE` es -- not fully applied
       | otherwise = {-# SCC "reducePrimitive" #-} do
-          let (es1,es2) = genericSplitAt ar es
+          let (es1,es2) = splitAt ar es
               args1     = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es1
           r <- primFunImplementation pf args1
           case r of
@@ -505,22 +505,22 @@ unfoldDefinitionStep unfoldDelayed v0 f es =
       debugReduce ev = verboseS "tc.reduce" 90 $ do
         case ev of
           NoReduction v -> do
-            traceSDocM "tc.reduce" 90 $ vcat
+            reportSDoc "tc.reduce" 90 $ vcat
               [ text "*** tried to reduce " <+> prettyTCM f
               , text "    es =  " <+> sep (map (prettyTCM . ignoreReduced) es)
               -- , text "*** tried to reduce " <+> prettyTCM vfull
               , text "    stuck on" <+> prettyTCM (ignoreBlocking v)
               ]
           YesReduction _simpl v -> do
-            traceSDocM "tc.reduce"  90 $ text "*** reduced definition: " <+> prettyTCM f
-            traceSDocM "tc.reduce"  95 $ text "    result" <+> prettyTCM v
-            traceSDocM "tc.reduce" 100 $ text "    raw   " <+> text (show v)
+            reportSDoc "tc.reduce"  90 $ text "*** reduced definition: " <+> prettyTCM f
+            reportSDoc "tc.reduce"  95 $ text "    result" <+> prettyTCM v
+            reportSDoc "tc.reduce" 100 $ text "    raw   " <+> text (show v)
 
 -- | Reduce a non-primitive definition if it is a copy linking to another def.
 reduceDefCopy :: QName -> Elims -> TCM (Reduced () Term)
 reduceDefCopy f es = do
   info <- TCM.getConstInfo f
-  rewr <- TCM.getRewriteRulesFor f
+  rewr <- instantiateRewriteRules =<< TCM.getRewriteRulesFor f
   if (defCopy info) then reduceDef_ info rewr f es else return $ NoReduction ()
   where
     reduceDef_ :: Definition -> RewriteRules -> QName -> Elims -> TCM (Reduced () Term)
@@ -1067,7 +1067,7 @@ instance InstantiateFull Substitution where
   instantiateFull' sigma =
     case sigma of
       IdS                  -> return IdS
-      EmptyS               -> return EmptyS
+      EmptyS err           -> return $ EmptyS err
       Wk   n sigma         -> Wk   n         <$> instantiateFull' sigma
       Lift n sigma         -> Lift n         <$> instantiateFull' sigma
       Strengthen bot sigma -> Strengthen bot <$> instantiateFull' sigma
@@ -1178,7 +1178,7 @@ instance InstantiateFull Definition where
       return $ Defn rel x t pol occ df i c inst copy ma inj d
 
 instance InstantiateFull NLPat where
-  instantiateFull' (PVar x y z) = return $ PVar x y z
+  instantiateFull' (PVar x y) = return $ PVar x y
   instantiateFull' (PWild)    = return PWild
   instantiateFull' (PDef x y) = PDef <$> instantiateFull' x <*> instantiateFull' y
   instantiateFull' (PLam x y) = PLam x <$> instantiateFull' y
@@ -1219,7 +1219,7 @@ instance InstantiateFull DisplayTerm where
 instance InstantiateFull Defn where
     instantiateFull' d = case d of
       Axiom{} -> return d
-      AbstractDefn -> return d
+      AbstractDefn d -> AbstractDefn <$> instantiateFull' d
       Function{ funClauses = cs, funCompiled = cc, funInv = inv } -> do
         (cs, cc, inv) <- instantiateFull' (cs, cc, inv)
         return $ d { funClauses = cs, funCompiled = cc, funInv = inv }

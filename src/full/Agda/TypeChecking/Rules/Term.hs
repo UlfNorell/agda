@@ -15,7 +15,7 @@ import Control.Monad.Reader
 import Data.Maybe
 import Data.Either (partitionEithers)
 import Data.Monoid (mappend)
-import Data.List hiding (sort, null)
+import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Traversable (sequenceA)
@@ -75,19 +75,21 @@ import {-# SOURCE #-} Agda.TypeChecking.Empty (isEmptyType)
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl (checkSectionApplication)
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Def (checkFunDef, checkFunDef', useTerPragma)
 
+import Agda.Utils.Either
 import Agda.Utils.Except
   ( ExceptT
   , MonadError(catchError, throwError)
   , runExceptT
   )
-
 import Agda.Utils.Functor
 import Agda.Utils.Lens
-import Agda.Utils.List (groupOn)
+import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
+import Agda.Utils.Pretty ( prettyShow )
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 import Agda.Utils.Tuple
 
@@ -129,7 +131,7 @@ isType_ e =
     A.Set _ n    -> do
       return $ sort (mkType n)
     A.App i s arg
-      | getHiding arg == NotHidden,
+      | visible arg,
         A.Set _ 0 <- unScope s ->
       ifNotM hasUniversePolymorphism
           (typeError $ GenericError "Use --universe-polymorphism to enable level arguments to Set")
@@ -204,30 +206,6 @@ isTypeEqualTo e0 t = scopedExpr e0 >>= \case
 
 leqType_ :: Type -> Type -> TCM ()
 leqType_ t t' = workOnTypes $ leqType t t'
-
-{- UNUSED
--- | Force a type to be a Pi. Instantiates if necessary. The 'Hiding' is only
---   used when instantiating a meta variable.
-
-forcePi :: Hiding -> String -> Type -> TCM Type
-forcePi h name (El s t) =
-    do  t' <- reduce t
-        case t' of
-            Pi _ _      -> return $ El s t'
-            _           -> do
-                sa <- newSortMeta
-                sb <- newSortMeta
-                let s' = sLub sa sb
-
-                a <- newTypeMeta sa
-                x <- freshName_ name
-                let arg = setHiding h $ defaultDom a
-                b <- addContext (x, arg) $ newTypeMeta sb
-                let ty = El s' $ Pi arg (Abs (show x) b)
-                equalType (El s t') ty
-                ty' <- reduce ty
-                return ty'
--}
 
 ---------------------------------------------------------------------------
 -- * Telescopes
@@ -304,7 +282,7 @@ checkLambda :: Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
 checkLambda (Arg _ (A.TLet _ lbs)) body target =
   checkLetBindings lbs (checkExpr body target)
 checkLambda (Arg info (A.TBind _ xs typ)) body target = do
-  reportSLn "tc.term.lambda" 60 $ "checkLambda   xs = " ++ show xs
+  reportSLn "tc.term.lambda" 60 $ "checkLambda   xs = " ++ prettyShow xs
 
   let numbinds = length xs
   TelV tel btyp <- telViewUpTo numbinds target
@@ -349,12 +327,12 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
 
     useTargetType tel@(ExtendTel dom (Abs y EmptyTel)) btyp = do
         verboseS "tc.term.lambda" 5 $ tick "lambda-with-target-type"
-        reportSLn "tc.term.lambda" 60 $ "useTargetType y  = " ++ show y
+        reportSLn "tc.term.lambda" 60 $ "useTargetType y  = " ++ y
 
         -- merge in the hiding info of the TBind
         let [WithHiding h x] = xs
         info <- return $ mapHiding (mappend h) info
-        unless (getHiding dom == getHiding info) $ typeError $ WrongHidingInLambda target
+        unless (sameHiding dom info) $ typeError $ WrongHidingInLambda target
         -- Andreas, 2011-10-01 ignore relevance in lambda if not explicitly given
         info <- lambdaIrrelevanceCheck info dom
         -- Andreas, 2015-05-28 Issue 1523
@@ -450,7 +428,7 @@ insertHiddenLambdas h target postpone ret = do
       Pi dom b -> do
         let h' = getHiding dom
         -- Found expected hiding: return function type.
-        if h == h' then ret t else do
+        if sameHiding h h' then ret t else do
           -- Found a visible argument but expected a hidden one:
           -- That's an error, as we cannot insert a visible lambda.
           if visible h' then typeError $ WrongHidingInLambda target else do
@@ -470,7 +448,7 @@ checkAbsurdLambda i h e t = do
   ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ t' -> do
     case ignoreSharing $ unEl t' of
       Pi dom@(Dom info' a) b
-        | h /= getHiding info' -> typeError $ WrongHidingInLambda t'
+        | not (sameHiding h info') -> typeError $ WrongHidingInLambda t'
         | not (null $ allMetas a) ->
             postponeTypeCheckingProblem (CheckExpr e t') $
               null . allMetas <$> instantiateFull a
@@ -539,8 +517,8 @@ checkExtendedLambda i di qname cs e t = do
        text "\" has type: " $$ prettyTCM t -- <+> text " where clauses: " <+> text (show cs)
      args     <- getContextArgs
      freevars <- getCurrentModuleFreeVars
-     let argsNoParam = genericDrop freevars args -- don't count module parameters
-     let (hid, notHid) = partition notVisible argsNoParam
+     let argsNoParam = drop freevars args -- don't count module parameters
+     let (hid, notHid) = List.partition notVisible argsNoParam
      reportSDoc "tc.term.exlam" 30 $ vcat $
        [ text "dropped args: " <+> prettyTCM (take freevars args)
        , text "hidden  args: " <+> prettyTCM hid
@@ -557,6 +535,8 @@ checkExtendedLambda i di qname cs e t = do
        -- Case: we could not check the extended lambda because we are blocked on a meta.
        -- In this case, we want to postpone.
        Just (err, x) -> do
+         reportSDoc "tc.term.exlam" 50 $ vcat $
+           [ text "checking extended lambda got stuck on meta: " <+> text (show x) ]
          -- Note that we messed up the state a bit.  We might want to unroll these state changes.
          -- However, they are mostly harmless:
          -- 1. We created a new mutual block id.
@@ -569,19 +549,27 @@ checkExtendedLambda i di qname cs e t = do
          -- The meta might not be known in the reset state, as it could have been created
          -- somewhere on the way to the type error.
          mm <- Map.lookup x <$> getMetaStore
-         case mvInstantiation <$> mm of
+         x' <- case mvInstantiation <$> mm of
            -- Case: we do not know the meta
+           -- We mine the type of the extended lambda for a (possibly) blocking meta.
            Nothing -> do
-             -- TODO: mine for a meta in t
-             -- For now, we fail.
-             throwError err
+             reportSDoc "tc.term.exlam" 50 $ vcat $
+               [ text "meta was not found in reset state"
+               , text "trying to find meta in type of extlam..." ]
+             case allMetas t of
+               []    -> do
+                 reportSDoc "tc.term.exlam" 50 $ text "no meta found, giving up."
+                 throwError err
+               (x:_) -> do
+                 reportSDoc "tc.term.exlam" 50 $ text $ "found meta: " ++ show x
+                 return x
            -- Case: we know the meta here.
            Just InstV{} -> __IMPOSSIBLE__  -- It cannot be instantiated yet.
-           Just{} -> do
-             -- It has to be blocked on some meta, so we can postpone,
-             -- being sure it will be retired when a meta is solved
-             -- (which might be the blocking meta in which case we actually make progress).
-             postponeTypeCheckingProblem (CheckExpr e t) $ isInstantiatedMeta x
+           Just{} -> return x
+         -- It has to be blocked on some meta, so we can postpone,
+         -- being sure it will be retired when a meta is solved
+         -- (which might be the blocking meta in which case we actually make progress).
+         postponeTypeCheckingProblem (CheckExpr e t) $ isInstantiatedMeta x'
   where
     -- Concrete definitions cannot use information about abstract things.
     abstract ConcreteDef = inConcreteMode
@@ -592,10 +580,15 @@ checkExtendedLambda i di qname cs e t = do
 --   * If successful, return Nothing.
 --
 --   * If @IlltypedPattern p a@ is thrown and type @a@ is blocked on some meta @x@
---     return @Just x@.  Note that the returned meta might only exists in the state
---     where the error was thrown, thus, be an invalid 'MetaId' in the current state.
+--     return @Just x@.
+--
+--   * If @SplitError (UnificationStuck c tel us vs _)@ is thrown and the unification
+--     problem @us =?= vs : tel@ is blocked on some meta @x@ return @Just x@.
 --
 --   * If another error was thrown or the type @a@ is not blocked, reraise the error.
+--
+--   Note that the returned meta might only exists in the state where the error was
+--   thrown, thus, be an invalid 'MetaId' in the current state.
 --
 catchIlltypedPatternBlockedOnMeta :: TCM () -> TCM (Maybe (TCErr, MetaId))
 catchIlltypedPatternBlockedOnMeta m = (Nothing <$ do disableDestructiveUpdate m)
@@ -608,6 +601,14 @@ catchIlltypedPatternBlockedOnMeta m = (Nothing <$ do disableDestructiveUpdate m)
         enterClosure cl $ \ _ -> do
           ifBlockedType a (\ x _ -> return $ Just x) $ {- else -} \ _ -> return Nothing
       caseMaybe mx reraise $ \ x -> return $ Just (err, x)
+    TypeError s cl@Closure{ clValue = SplitError (UnificationStuck c tel us vs _) } -> do
+      mx <- localState $ do
+        put s
+        enterClosure cl $ \ _ -> do
+          problem <- reduce =<< instantiateFull (flattenTel tel, us, vs)
+          -- over-approximating the set of metas actually blocking unification
+          return $ listToMaybe $ allMetas problem
+      caseMaybe mx reraise $ \ x -> return $ Just (err, x)
     _ -> reraise
 
 ---------------------------------------------------------------------------
@@ -617,7 +618,7 @@ catchIlltypedPatternBlockedOnMeta m = (Nothing <$ do disableDestructiveUpdate m)
 expandModuleAssigns :: [Either A.Assign A.ModuleName] -> [C.Name] -> TCM A.Assigns
 expandModuleAssigns mfs exs = do
   let (fs , ms) = partitionEithers mfs
-      exs' = exs \\ map (view nameFieldA) fs
+      exs' = exs List.\\ map (view nameFieldA) fs
   fs' <- forM exs' $ \ f -> do
     pms <- forM ms $ \ m -> do
        modScope <- getNamedScope m
@@ -631,7 +632,11 @@ expandModuleAssigns mfs exs = do
     case catMaybes pms of
       []        -> return Nothing
       [(_, fa)] -> return (Just fa)
-      mfas      -> typeError $ GenericError $ "Ambiguity: the field " ++ show f ++ " appears in the following modules " ++ show (map fst mfas)
+      mfas      -> typeError . GenericDocError =<< do
+        vcat $
+          [ text "Ambiguity: the field" <+> prettyTCM f
+            <+> text "appears in the following modules: " ]
+          ++ map (prettyTCM . fst) mfas
   return (fs ++ catMaybes fs')
 
 -- | @checkRecordExpression fs e t@ checks record construction against type @t@.
@@ -647,14 +652,14 @@ checkRecordExpression mfs e t = do
     -- Case: We know the type of the record already.
     Def r es  -> do
       let ~(Just vs) = allApplyElims es
-      reportSDoc "tc.term.rec" 20 $ text $ "  r   = " ++ show r
+      reportSDoc "tc.term.rec" 20 $ text $ "  r   = " ++ prettyShow r
 
       reportSDoc "tc.term.rec" 30 $ text "  xs  = " <> do
-        text =<< show . map unArg <$> getRecordFieldNames r
+        text =<< prettyShow . map unArg <$> getRecordFieldNames r
       reportSDoc "tc.term.rec" 30 $ text "  ftel= " <> do
         prettyTCM =<< getRecordFieldTypes r
       reportSDoc "tc.term.rec" 30 $ text "  con = " <> do
-        text =<< show <$> getRecordConstructor r
+        text =<< prettyShow <$> getRecordConstructor r
 
       def <- getRecordDef r
       let -- Field names with ArgInfo.
@@ -665,9 +670,9 @@ checkRecordExpression mfs e t = do
           -- Record constructor.
           con  = killRange $ recConHead def
       reportSDoc "tc.term.rec" 20 $ vcat
-        [ text $ "  xs  = " ++ show xs
-        , text   "  ftel= " <> prettyTCM (recTel def)
-        , text $ "  con = " ++ show con
+        [ text "  xs  = " <> return (P.pretty xs)
+        , text "  ftel= " <> prettyTCM (recTel def)
+        , text "  con = " <> return (P.pretty con)
         ]
 
       -- Compute the list of given fields, decorated with the ArgInfo from the record def.
@@ -676,7 +681,7 @@ checkRecordExpression mfs e t = do
       -- Compute a list of metas for the missing visible fields.
       scope <- getScope
       let re = getRange e
-          meta x = A.Underscore $ A.MetaInfo re scope Nothing (show x)
+          meta x = A.Underscore $ A.MetaInfo re scope Nothing (prettyShow x)
       -- In @es@ omitted explicit fields are replaced by underscores.
       -- Omitted implicit or instance fields
       -- are still left out and inserted later by checkArguments_.
@@ -698,8 +703,8 @@ checkRecordExpression mfs e t = do
           -- If there are no records with the right fields we might as well fail right away.
         [] -> case fields of
           []  -> typeError $ GenericError "There are no records in scope"
-          [f] -> typeError $ GenericError $ "There is no known record with the field " ++ show f
-          _   -> typeError $ GenericError $ "There is no known record with the fields " ++ unwords (map show fields)
+          [f] -> typeError $ GenericError $ "There is no known record with the field " ++ prettyShow f
+          _   -> typeError $ GenericError $ "There is no known record with the fields " ++ unwords (map prettyShow fields)
           -- If there's only one record with the appropriate fields, go with that.
         [r] -> do
           def <- getConstInfo r
@@ -821,7 +826,7 @@ checkExpr e t0 =
     reportSDoc "tc.term.expr.top" 15 $
         text "Checking" <+> sep
           [ fsep [ prettyTCM e, text ":", prettyTCM t0 ]
-          , nest 2 $ text "at " <+> (text . show =<< getCurrentRange)
+          , nest 2 $ text "at " <+> (text . prettyShow =<< getCurrentRange)
           ]
     reportSDoc "tc.term.expr.top.detailed" 80 $
       text "Checking" <+> fsep [ prettyTCM e, text ":", text (show t0) ]
@@ -864,11 +869,14 @@ checkExpr e t0 =
           let quoted (A.Def x) = return x
               quoted (A.Macro x) = return x
               quoted (A.Proj o (AmbQ [x])) = return x
-              quoted (A.Proj o (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
+              quoted (A.Proj o (AmbQ xs))  =
+                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow xs
               quoted (A.Con (AmbQ [x])) = return x
-              quoted (A.Con (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
+              quoted (A.Con (AmbQ xs))  =
+                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow xs
               quoted (A.ScopedExpr _ e) = quoted e
-              quoted _                  = typeError $ GenericError $ "quote: not a defined name"
+              quoted _                  =
+                typeError $ GenericError $ "quote: not a defined name"
           x <- quoted (namedThing e)
           ty <- qNameType
           coerce (quoteName x) ty t
@@ -1008,9 +1016,9 @@ checkExpr e t0 =
       checkExpr (A.Lam (A.ExprRange re) (domainFree info x) e) t
 
     hiddenLambdaOrHole h e = case e of
-      A.AbsurdLam _ h'        -> h == h'
+      A.AbsurdLam _ h'        -> sameHiding h h'
       A.ExtendedLam _ _ _ cls -> any hiddenLHS cls
-      A.Lam _ bind _          -> h == getHiding bind
+      A.Lam _ bind _          -> sameHiding h bind
       A.QuestionMark{}        -> True
       _                       -> False
 
@@ -1124,7 +1132,7 @@ inferOrCheckProjApp
 inferOrCheckProjApp e o ds args mt = do
   reportSDoc "tc.proj.amb" 20 $ vcat
     [ text "checking ambiguous projection"
-    , text $ "  ds   = " ++ show ds
+    , text $ "  ds   = " ++ prettyShow ds
     , text   "  args = " <+> sep (map prettyTCM args)
     , text   "  t    = " <+> caseMaybe mt (text "Nothing") prettyTCM
     ]
@@ -1132,7 +1140,7 @@ inferOrCheckProjApp e o ds args mt = do
   let refuse :: String -> TCM (Term, Type)
       refuse reason = typeError $ GenericError $
         "Cannot resolve overloaded projection "
-        ++ show (A.nameConcrete $ A.qnameName $ head ds)
+        ++ prettyShow (A.nameConcrete $ A.qnameName $ fromMaybe __IMPOSSIBLE__ $ headMaybe ds)
         ++ " because " ++ reason
       refuseNotApplied = refuse "it is not applied to a visible argument"
       refuseNoMatching = refuse "no matching candidate found"
@@ -1154,7 +1162,7 @@ inferOrCheckProjApp e o ds args mt = do
   -- For now, we only allow ambiguous projections if the first visible
   -- argument is the record value.
 
-  case filter (visible . getHiding . snd) $ zip [0..] args of
+  case filter (visible . snd) $ zip [0..] args of
 
     -- Case: we have no visible argument to the projection.
     -- In inference mode, we really need the visible argument, postponing does not help
@@ -1168,7 +1176,7 @@ inferOrCheckProjApp e o ds args mt = do
       caseMaybeM (isRecordType ta) refuseNotRecordType $ \ (_q, _pars, defn) -> do
       case defn of
         Record { recFields = fs } -> do
-          case catMaybes $ for fs $ \ (Arg _ f) -> find (f ==) ds of
+          case catMaybes $ for fs $ \ (Arg _ f) -> List.find (f ==) ds of
             [] -> refuseNoMatching
             [d] -> do
               storeDisambiguatedName d
@@ -1192,7 +1200,7 @@ inferOrCheckProjApp e o ds args mt = do
           -- try to project it with all of the possible projections
           let try d = do
               reportSDoc "tc.proj.amb" 30 $ vcat
-                [ text $ "trying projection " ++ show d
+                [ text $ "trying projection " ++ prettyShow d
                 , text "  td  = " <+> caseMaybeM (getDefType d ta) (text "Nothing") prettyTCM
                 ]
 
@@ -1202,7 +1210,7 @@ inferOrCheckProjApp e o ds args mt = do
                 [ text $ "  isProjection = " ++ caseMaybe isP "no" (const "yes")
                 ] ++ caseMaybe isP [] (\ Projection{ projProper = proper, projOrig = orig } ->
                 [ text $ "  proper       = " ++ show proper
-                , text $ "  orig         = " ++ show orig
+                , text $ "  orig         = " ++ prettyShow orig
                 ])
 
               -- Andreas, 2017-01-21, issue #2422
@@ -1248,7 +1256,7 @@ inferOrCheckProjApp e o ds args mt = do
             [] -> refuseNoMatching
             [[]] -> refuseNoMatching
             (_:_:_) -> refuse $ "several matching candidates found: "
-                 ++ show (map (fst . snd) $ concat cands)
+                 ++ prettyShow (map (fst . snd) $ concat cands)
             -- case: just one matching projection d
             -- the term u = d v
             -- the type tb is the type of this application
@@ -1309,49 +1317,62 @@ checkApplication hd args e t = do
     A.Proj o (AmbQ ds@(_:_:_)) -> checkProjApp e o ds args t
 
     -- Subcase: ambiguous constructor
-    A.Con (AmbQ cs@(_:_:_)) -> do
+    A.Con (AmbQ cs0@(_:_:_)) -> do
       -- First we should figure out which constructor we want.
-      reportSLn "tc.check.term" 40 $ "Ambiguous constructor: " ++ show cs
+      reportSLn "tc.check.term" 40 $ "Ambiguous constructor: " ++ prettyShow cs0
 
       -- Get the datatypes of the various constructors
       let getData Constructor{conData = d} = d
           getData _                        = __IMPOSSIBLE__
-      reportSLn "tc.check.term" 40 $ "  ranges before: " ++ show (getRange cs)
+      reportSLn "tc.check.term" 40 $ "  ranges before: " ++ show (getRange cs0)
       -- We use the reduced constructor when disambiguating, but
       -- the original constructor for type checking. This is important
       -- since they may have different types (different parameters).
       -- See issue 279.
-      cons  <- mapM getConForm cs
-      reportSLn "tc.check.term" 40 $ "  reduced: " ++ show cons
-      dcs <- zipWithM (\ c con -> (, setConName c con) . getData . theDef <$> getConInfo con) cs cons
-      -- Type error
-      let badCon t = typeError $ DoesNotConstructAnElementOf (head cs) t
-      -- Lets look at the target type at this point
-      let getCon :: TCM (Maybe ConHead)
-          getCon = do
-            TelV tel t1 <- telView t
-            addContext tel $ do
-             reportSDoc "tc.check.term.con" 40 $ nest 2 $
-               text "target type: " <+> prettyTCM t1
-             ifBlockedType t1 (\ m t -> return Nothing) $ \ t' ->
-               caseMaybeM (isDataOrRecord $ unEl t') (badCon t') $ \ d ->
-                 case [ c | (d', c) <- dcs, d == d' ] of
-                   [c] -> do
-                     reportSLn "tc.check.term" 40 $ "  decided on: " ++ show c
-                     storeDisambiguatedName $ conName c
-                     return $ Just c
-                   []  -> badCon $ t' $> Def d []
-                   cs  -> typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d $ map conName cs
-      let unblock = isJust <$> getCon -- to unblock, call getCon later again
-      mc <- getCon
-      case mc of
-        Just c  -> checkConstructorApplication e t c args
-        Nothing -> postponeTypeCheckingProblem (CheckExpr e t) unblock
+      -- Andreas, 2017-08-13, issue #2686: ignore abstract constructors
+      (cs, cons)  <- unzip . snd . partitionEithers <$> do
+         forM cs0 $ \ c -> mapRight (c,) <$> getConForm c
+      reportSLn "tc.check.term" 40 $ "  reduced: " ++ prettyShow cons
+      case cons of
+        []  -> typeError $ AbstractConstructorNotInScope $
+                 fromMaybe __IMPOSSIBLE__ $ headMaybe cs0
+        [con] -> do
+          let c = setConName (fromMaybe __IMPOSSIBLE__ $ headMaybe cs) con
+          reportSLn "tc.check.term" 40 $ "  only one non-abstract constructor: " ++ prettyShow c
+          storeDisambiguatedName $ conName c
+          checkConstructorApplication e t c args
+        _   -> do
+          dcs <- zipWithM (\ c con -> (, setConName c con) . getData . theDef <$> getConInfo con) cs cons
+          -- Type error
+          let badCon t = typeError $ flip DoesNotConstructAnElementOf t $
+                fromMaybe __IMPOSSIBLE__ $ headMaybe cs
+          -- Lets look at the target type at this point
+          let getCon :: TCM (Maybe ConHead)
+              getCon = do
+                TelV tel t1 <- telView t
+                addContext tel $ do
+                 reportSDoc "tc.check.term.con" 40 $ nest 2 $
+                   text "target type: " <+> prettyTCM t1
+                 ifBlockedType t1 (\ m t -> return Nothing) $ \ t' ->
+                   caseMaybeM (isDataOrRecord $ unEl t') (badCon t') $ \ d ->
+                     case [ c | (d', c) <- dcs, d == d' ] of
+                       [c] -> do
+                         reportSLn "tc.check.term" 40 $ "  decided on: " ++ prettyShow c
+                         storeDisambiguatedName $ conName c
+                         return $ Just c
+                       []  -> badCon $ t' $> Def d []
+                       cs  -> typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d $ map conName cs
+          let unblock = isJust <$> getCon -- to unblock, call getCon later again
+          mc <- getCon
+          case mc of
+            Just c  -> checkConstructorApplication e t c args
+            Nothing -> postponeTypeCheckingProblem (CheckExpr e t) unblock
 
     -- Subcase: non-ambiguous constructor
     A.Con (AmbQ [c]) -> do
       -- augment c with record fields, but do not revert to original name
-      con <- getOrigConHead c
+      con <- fromRightM (sigError __IMPOSSIBLE_VERBOSE__ (typeError $ AbstractConstructorNotInScope c)) =<<
+        getOrigConHead c
       checkConstructorApplication e t con args
 
     -- Subcase: pattern synonym
@@ -1491,7 +1512,11 @@ checkOrInferMeta newMeta mt i = do
     -- Rechecking an existing metavariable
     Just x -> do
       let v = MetaV x []
+      reportSDoc "tc.meta.check" 20 $
+        text "checking existing meta " <+> prettyTCM v
       t' <- jMetaType . mvJudgement <$> lookupMeta x
+      reportSDoc "tc.meta.check" 20 $
+        nest 2 $ text "of type " <+> prettyTCM t'
       case mt of
         Nothing -> return (v, t')
         Just t  -> (,t) <$> coerce v t' t
@@ -1507,7 +1532,7 @@ domainFree info x =
       { A.metaRange          = r
       , A.metaScope          = emptyScopeInfo
       , A.metaNumber         = Nothing
-      , A.metaNameSuggestion = show $ A.nameConcrete x
+      , A.metaNameSuggestion = prettyShow $ A.nameConcrete x
       }
 
 ---------------------------------------------------------------------------
@@ -1532,9 +1557,9 @@ inferHead e = do
     (A.Var x) -> do -- traceCall (InferVar x) $ do
       (u, a) <- getVarInfo x
       reportSDoc "tc.term.var" 20 $ hsep
-        [ text "variable" , text (show x)
+        [ text "variable" , prettyTCM x
         , text "(" , text (show u) , text ")"
-        , text "has type:" , text (show a)
+        , text "has type:" , prettyTCM a
         ]
       when (unusableRelevance $ getRelevance a) $
         typeError $ VariableIsIrrelevant x
@@ -1550,16 +1575,17 @@ inferHead e = do
 
       -- First, inferDef will try to apply the constructor
       -- to the free parameters of the current context. We ignore that.
-      con <- getOrigConHead c
+      con <- fromRightM (sigError __IMPOSSIBLE_VERBOSE__ (typeError $ AbstractConstructorNotInScope c)) =<<
+        getOrigConHead c
       (u, a) <- inferDef (\ _ -> Con con ConOCon []) c
 
       -- Next get the number of parameters in the current context.
       Constructor{conPars = n} <- theDef <$> (instantiateDef =<< getConstInfo c)
 
-      reportSLn "tc.term.con" 7 $ unwords [show c, "has", show n, "parameters."]
+      reportSLn "tc.term.con" 7 $ unwords [prettyShow c, "has", show n, "parameters."]
 
       -- So when applying the constructor throw away the parameters.
-      return (apply u . genericDrop n, a)
+      return (apply u . drop n, a)
     (A.Con _) -> __IMPOSSIBLE__  -- inferHead will only be called on unambiguous constructors
     (A.QuestionMark i ii) -> inferMeta (newQuestionMark ii) i
     (A.Underscore i)   -> inferMeta (newValueMeta RunMetaOccursCheck) i
@@ -1634,7 +1660,7 @@ checkConstructorApplication org t c args = do
            reportSDoc "tc.term.con" 50 $ nest 2 $ text $ "n'   = " ++ show n'
            when (n > n')  -- preprocessor does not like ', so put on next line
              __IMPOSSIBLE__
-           let ps    = genericTake n $ genericDrop (n' - n) vs
+           let ps    = take n $ drop (n' - n) vs
                ctype = defType cdef
            reportSDoc "tc.term.con" 20 $ vcat
              [ text "special checking of constructor application of" <+> prettyTCM c
@@ -1685,7 +1711,7 @@ checkConstructorApplication org t c args = do
         h    = getHiding arg
 
         namedPar   x = dropPar ((x ==) . unDom)
-        unnamedPar h = dropPar ((h ==) . getHiding)
+        unnamedPar h = dropPar (sameHiding h)
 
         dropPar this (p : ps) | this p    = Just ps
                               | otherwise = dropPar this ps
@@ -1763,12 +1789,12 @@ checkHeadApplication e t hd args = do
 
     (A.Def c) | Just c == (nameOfSharp <$> kit) -> do
       arg <- case args of
-               [a] | getHiding a == NotHidden -> return $ namedArg a
-               _ -> typeError $ GenericError $ show c ++ " must be applied to exactly one argument."
+               [a] | visible a -> return $ namedArg a
+               _ -> typeError $ GenericError $ prettyShow c ++ " must be applied to exactly one argument."
 
       -- The name of the fresh function.
       i <- fresh :: TCM Int
-      let name = filter (/= '_') (show $ A.nameConcrete $ A.qnameName c) ++ "-" ++ show i
+      let name = filter (/= '_') (prettyShow $ A.nameConcrete $ A.qnameName c) ++ "-" ++ show i
 
       kit <- coinductionKit'
       let flat = nameOfFlat kit
@@ -1884,7 +1910,7 @@ checkKnownArgument arg [] _ = genericDocError =<< do
 checkKnownArgument arg@(Arg info e) (Arg _infov v : vs) t = do
   (Dom info' a, b) <- mustBePi t
   -- Skip the arguments from vs that do not correspond to e
-  if not (getHiding info == getHiding info'
+  if not (sameHiding info info'
           && (visible info || maybe True ((absName b ==) . rangedThing) (nameOf e)))
     -- Continue with the next one
     then checkKnownArgument arg vs (b `absApp` v)
@@ -1948,11 +1974,11 @@ checkArguments exh r [] t0 t1 =
       t1' <- unEl <$> reduce t1
       implicitArgs (-1) (expand t1') t0
     where
-      expand (Pi (Dom info _) _)   Hidden = getHiding info /= Hidden &&
+      expand (Pi (Dom info _) _)   Hidden = not (hidden info) &&
                                             exh == ExpandLast
       expand _                     Hidden = exh == ExpandLast
-      expand (Pi (Dom info _) _) Instance = getHiding info /= Instance
-      expand _                   Instance = True
+      expand (Pi (Dom info _) _) Instance{} = not $ isInstance info
+      expand _                   Instance{} = True
       expand _                  NotHidden = False
 
 -- Case: argument given.
@@ -1974,7 +2000,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
           expand NotHidden y = False
           -- insert a hidden argument if arg is not hidden or has different name
           -- insert an instance argument if arg is not instance  or has different name
-          expand hy        y = hy /= hx || maybe False (y /=) mx
+          expand hy        y = not (sameHiding hy hx) || maybe False (y /=) mx
       (nargs, t) <- lift $ implicitNamedArgs (-1) expand t0
       -- Separate names from args.
       let (mxs, us) = unzip $ map (\ (Arg ai (Named mx u)) -> (mx, Arg ai u)) nargs
@@ -2008,7 +2034,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
         reportSDoc "tc.term.args" 40 $ nest 2 $ hang (text "type after implicits:") 2 (pretty t0')
         case ignoreSharing $ unEl t0' of
           Pi (Dom info' a) b
-            | getHiding info == getHiding info'
+            | sameHiding info info'
               && (visible info || maybe True ((absName b ==) . rangedThing) (nameOf e)) -> do
                 u <- lift $ applyRelevanceToContext (getRelevance info') $ do
                  -- Andreas, 2014-05-30 experiment to check non-dependent arguments
@@ -2033,7 +2059,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
                 reportSDoc "error" 10 $ nest 2 $ vcat
                   [ text $ "info      = " ++ show info
                   , text $ "info'     = " ++ show info'
-                  , text $ "absName b = " ++ show (absName b)
+                  , text $ "absName b = " ++ absName b
                   , text $ "nameOf e  = " ++ show (nameOf e)
                   ]
                 wrongPi
@@ -2119,7 +2145,7 @@ inferOrCheck e mt = case e of
     (f, t0) <- inferHead hd
     res <- runErrorT $ checkArguments DontExpandLast
                                       (getRange hd) args t0 $
-                                      maybe (sort Prop) id mt
+                                      fromMaybe (sort Prop) mt
     case res of
       Right (vs, t1) -> maybe (return (f vs, t1))
                               (\ t -> (,t) <$> coerce (f vs) t1 t)
@@ -2164,14 +2190,14 @@ inferExprForWith e = do
         typeError $ WithOnFreeVariable e v0
       _        -> return ()
     -- Possibly insert hidden arguments.
-    TelV tel t0 <- telViewUpTo' (-1) ((NotHidden /=) . getHiding) t
+    TelV tel t0 <- telViewUpTo' (-1) (not . visible) t
     case ignoreSharing $ unEl t0 of
       Def d vs -> do
         res <- isDataOrRecordType d
         case res of
           Nothing -> return (v, t)
           Just{}  -> do
-            (args, t1) <- implicitArgs (-1) (NotHidden /=) t
+            (args, t1) <- implicitArgs (-1) notVisible t
             return (v `apply` args, t1)
       _ -> return (v, t)
 
@@ -2259,7 +2285,7 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
         -- We get list of names of the let-bound vars from the context.
         let xs   = map (fst . unDom) (reverse binds)
         -- We add all the bindings to the context.
-        foldr (uncurry4 addLetBinding) ret $ zip4 infos xs sigma ts
+        foldr (uncurry4 addLetBinding) ret $ List.zip4 infos xs sigma ts
 
 checkLetBinding (A.LetApply i x modapp copyInfo _adir) ret = do
   -- Any variables in the context that doesn't belong to the current

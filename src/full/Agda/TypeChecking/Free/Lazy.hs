@@ -348,7 +348,7 @@ freeSubst :: (IsVarSet c, Free a) => Substitution' a -> FreeM c (Substitution' c
 freeSubst rho =
   case rho of
     IdS                -> pure IdS
-    EmptyS             -> pure EmptyS
+    EmptyS err         -> pure (EmptyS err)
     u :# rho           -> (:#) <$> freeVars' u <*> freeSubst rho
     Strengthen err rho -> Strengthen err <$> freeSubst rho
     Wk n rho           -> Wk   n <$> bind' (-n) (freeSubst rho)
@@ -359,7 +359,7 @@ lookupFree rho single Nothing = mempty
 lookupFree rho single i@(Just i') =
   case rho of
     IdS                -> single i
-    EmptyS             -> __IMPOSSIBLE__
+    EmptyS err         -> absurd err
     u :# rho
       | i' == 0        -> u
       | otherwise      -> lookupFree rho single (subVar 1 i)

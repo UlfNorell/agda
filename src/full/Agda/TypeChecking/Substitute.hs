@@ -8,6 +8,13 @@
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
+-- | This module contains the definition of hereditary substitution
+-- and application operating on internal syntax which is in β-normal
+-- form (β including projection reductions).
+--
+-- Further, it contains auxiliary functions which rely on substitution
+-- but not on reduction.
+
 module Agda.TypeChecking.Substitute
   ( module Agda.TypeChecking.Substitute
   , module Agda.TypeChecking.Substitute.Class
@@ -18,7 +25,6 @@ module Agda.TypeChecking.Substitute
 import Control.Applicative
 import Data.Function
 import Data.Functor
-import Data.List hiding (sort, drop)
 import qualified Data.List as List
 import Data.Map (Map)
 import Data.Maybe
@@ -78,7 +84,7 @@ canProject :: QName -> Term -> Maybe (Arg Term)
 canProject f v =
   case ignoreSharing v of
     (Con (ConHead _ _ fs) _ vs) -> do
-      i <- elemIndex f fs
+      i <- List.elemIndex f fs
       headMaybe (drop i vs)
     _ -> Nothing
 
@@ -91,7 +97,7 @@ conApp ch@(ConHead c _ fs) ci args (Proj o f : es) =
         "conApp: constructor " ++ show c ++
         " with fields " ++ show fs ++
         " projected by " ++ show f
-      i = maybe failure id            $ elemIndex f fs
+      i = maybe failure id            $ List.elemIndex f fs
       v = maybe failure argToDontCare $ headMaybe $ drop i args
   in  applyE v es
 
@@ -182,15 +188,18 @@ instance Apply Definition where
     Defn info x (piApply t args) (apply pol args) (apply occ args) df m c inst copy ma inj (apply d args)
 
 instance Apply RewriteRule where
-  apply r args = RewriteRule
-    { rewName    = rewName r
-    , rewContext = apply (rewContext r) args
-    , rewHead    = rewHead r
-    , rewPats    = applySubst sub (rewPats r)
-    , rewRHS     = applySubst sub (rewRHS r)
-    , rewType    = applySubst sub (rewType r)
-    }
-    where sub = parallelS (map unArg args)
+  apply r args =
+    let newContext = apply (rewContext r) args
+        sub        = liftS (size newContext) $ parallelS $
+                       reverse $ map (PTerm . unArg) args
+    in RewriteRule
+       { rewName    = rewName r
+       , rewContext = newContext
+       , rewHead    = rewHead r
+       , rewPats    = applySubst sub (rewPats r)
+       , rewRHS     = applyNLPatSubst sub (rewRHS r)
+       , rewType    = applyNLPatSubst sub (rewType r)
+       }
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} Apply [Occ.Occurrence] where
@@ -239,7 +248,7 @@ instance Apply Defn where
   apply d [] = d
   apply d args = case d of
     Axiom{} -> d
-    AbstractDefn -> d
+    AbstractDefn d -> AbstractDefn $ apply d args
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
             , funProjection = Nothing } ->
       d { funClauses    = apply cs args
@@ -472,7 +481,7 @@ instance DoDrop a => Abstract (Drop a) where
 instance Apply Permutation where
   -- The permutation must start with [0..m - 1]
   -- NB: section (- m) not possible (unary minus), hence (flip (-) m)
-  apply (Perm n xs) args = Perm (n - m) $ map (flip (-) m) $ genericDrop m xs
+  apply (Perm n xs) args = Perm (n - m) $ map (flip (-) m) $ drop m xs
     where
       m = size args
 
@@ -569,7 +578,7 @@ instance Abstract ProjLams where
 instance Abstract Defn where
   abstract tel d = case d of
     Axiom{} -> d
-    AbstractDefn -> d
+    AbstractDefn d -> AbstractDefn $ abstract tel d
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
             , funProjection = Nothing  } ->
       d { funClauses  = abstract tel cs
@@ -606,7 +615,7 @@ instance Abstract Defn where
       d { primClauses = abstract tel cs }
 
 instance Abstract PrimFun where
-    abstract tel (PrimFun x ar def) = PrimFun x (ar + n) $ \ts -> def $ genericDrop n ts
+    abstract tel (PrimFun x ar def) = PrimFun x (ar + n) $ \ts -> def $ drop n ts
         where n = size tel
 
 instance Abstract Clause where
@@ -767,25 +776,61 @@ instance Subst Term Pattern where
     LitP l       -> p
     ProjP{}      -> p
 
-instance Subst Term NLPat where
+instance DeBruijn NLPat where
+  deBruijnVar i = PVar i []
+  deBruijnView p = case p of
+    PVar i []   -> Just i
+    PVar{}      -> Nothing
+    PWild{}     -> Nothing
+    PDef{}      -> Nothing
+    PLam{}      -> Nothing
+    PPi{}       -> Nothing
+    PBoundVar{} -> Nothing -- or... ?
+    PTerm{}     -> Nothing -- or... ?
+
+applyNLPatSubst :: (Subst Term a) => Substitution' NLPat -> a -> a
+applyNLPatSubst = applySubst . fmap nlPatToTerm
+  where
+    nlPatToTerm :: NLPat -> Term
+    nlPatToTerm p = case p of
+      PVar i xs      -> Var i $ map (Apply . fmap var) xs
+      PTerm u        -> u
+      PWild          -> __IMPOSSIBLE__
+      PDef f es      -> __IMPOSSIBLE__
+      PLam i u       -> __IMPOSSIBLE__
+      PPi a b        -> __IMPOSSIBLE__
+      PBoundVar i es -> __IMPOSSIBLE__
+
+instance Subst NLPat NLPat where
   applySubst rho p = case p of
-    PVar id i bvs -> p
+    PVar i bvs -> lookupS rho i `applyBV` bvs
     PWild  -> p
     PDef f es -> PDef f $ applySubst rho es
     PLam i u -> PLam i $ applySubst rho u
     PPi a b -> PPi (applySubst rho a) (applySubst rho b)
     PBoundVar i es -> PBoundVar i $ applySubst rho es
-    PTerm u -> PTerm $ applySubst rho u
+    PTerm u -> PTerm $ applyNLPatSubst rho u
 
-instance Subst Term NLPType where
+    where
+      applyBV :: NLPat -> [Arg Int] -> NLPat
+      applyBV p ys = case p of
+        PVar i xs      -> PVar i (xs ++ ys)
+        PTerm u        -> PTerm $ u `apply` map (fmap var) ys
+        PWild          -> __IMPOSSIBLE__
+        PDef f es      -> __IMPOSSIBLE__
+        PLam i u       -> __IMPOSSIBLE__
+        PPi a b        -> __IMPOSSIBLE__
+        PBoundVar i es -> __IMPOSSIBLE__
+
+instance Subst NLPat NLPType where
   applySubst rho (NLPType s a) = NLPType (applySubst rho s) (applySubst rho a)
 
-instance Subst Term RewriteRule where
+instance Subst NLPat RewriteRule where
   applySubst rho (RewriteRule q gamma f ps rhs t) =
-    RewriteRule q (applySubst rho gamma)
+    RewriteRule q (applyNLPatSubst rho gamma)
                 f (applySubst (liftS n rho) ps)
-                  (applySubst (liftS n rho) rhs)
-                  (applySubst (liftS n rho) t)
+                  (applyNLPatSubst (liftS n rho) rhs)
+                  (applyNLPatSubst (liftS n rho) t)
     where n = size gamma
 
 instance Subst t a => Subst t (Blocked a) where
@@ -935,12 +980,32 @@ projDropParsApply (Projection prop d r _ lams) o args =
 -- * Telescopes
 ---------------------------------------------------------------------------
 
+-- ** Telescope view of a type
+
 type TelView = TelV Type
 data TelV a  = TelV { theTel :: Tele (Dom a), theCore :: a }
   deriving (Typeable, Show, Functor)
 
 deriving instance (Subst t a, Eq  a) => Eq  (TelV a)
 deriving instance (Subst t a, Ord a) => Ord (TelV a)
+
+-- | Takes off all exposed function domains from the given type.
+--   This means that it does not reduce to expose @Pi@-types.
+telView' :: Type -> TelView
+telView' = telView'UpTo (-1)
+
+-- | @telView'UpTo n t@ takes off the first @n@ exposed function types of @t@.
+-- Takes off all (exposed ones) if @n < 0@.
+telView'UpTo :: Int -> Type -> TelView
+telView'UpTo 0 t = TelV EmptyTel t
+telView'UpTo n t = case ignoreSharing $ unEl t of
+  Pi a b  -> absV a (absName b) $ telView'UpTo (n - 1) (absBody b)
+  _       -> TelV EmptyTel t
+  where
+    absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
+
+
+-- ** Creating telescopes from lists of types
 
 -- | Turn a typed binding @(x1 .. xn : A)@ into a telescope.
 bindsToTel' :: (Name -> a) -> [Name] -> Dom Type -> ListTel' a
@@ -959,20 +1024,8 @@ bindsWithHidingToTel' f (WithHiding h x : xs) t =
 bindsWithHidingToTel :: [WithHiding Name] -> Dom Type -> ListTel
 bindsWithHidingToTel = bindsWithHidingToTel' nameToArgName
 
--- | Takes off all exposed function domains from the given type.
---   This means that it does not reduce to expose @Pi@-types.
-telView' :: Type -> TelView
-telView' = telView'UpTo (-1)
 
--- | @telView'UpTo n t@ takes off the first @n@ exposed function types of @t@.
--- Takes off all (exposed ones) if @n < 0@.
-telView'UpTo :: Int -> Type -> TelView
-telView'UpTo 0 t = TelV EmptyTel t
-telView'UpTo n t = case ignoreSharing $ unEl t of
-  Pi a b  -> absV a (absName b) $ telView'UpTo (n - 1) (absBody b)
-  _       -> TelV EmptyTel t
-  where
-    absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
+-- ** Abstracting in terms and types
 
 -- | @mkPi dom t = telePi (telFromList [dom]) t@
 mkPi :: Dom (ArgName, Type) -> Type -> Type
@@ -1030,6 +1083,21 @@ instance TeleNoAbs ListTel where
 instance TeleNoAbs Telescope where
   teleNoAbs tel = teleNoAbs $ telToList tel
 
+
+-- ** Telescope typing
+
+-- | Given arguments @vs : tel@ (vector typing), extract their individual types.
+--   Returns @Nothing@ is @tel@ is not long enough.
+
+typeArgsWithTel :: Telescope -> [Term] -> Maybe [Dom Type]
+typeArgsWithTel _ []                         = return []
+typeArgsWithTel (ExtendTel dom tel) (v : vs) = (dom :) <$> typeArgsWithTel (absApp tel v) vs
+typeArgsWithTel EmptyTel{} (_:_)             = Nothing
+
+---------------------------------------------------------------------------
+-- * Clauses
+---------------------------------------------------------------------------
+
 -- | In compiled clauses, the variables in the clause body are relative to the
 --   pattern variables (including dot patterns) instead of the clause telescope.
 compiledClauseBody :: Clause -> Maybe Term
@@ -1038,6 +1106,8 @@ compiledClauseBody cl = applySubst (renamingR perm) $ clauseBody cl
 
 ---------------------------------------------------------------------------
 -- * Syntactic equality and order
+--
+-- Needs weakening.
 ---------------------------------------------------------------------------
 
 deriving instance Eq Substitution
@@ -1134,6 +1204,9 @@ instance Ord Term where
   u          `compare` Let sgm v  = compare u (applySubst sgm v)
   DontCare{} `compare` DontCare{} = EQ
 
+-- | Equality of binders relies on weakening
+--   which is a specical case of renaming
+--   which is a specical case of substitution.
 instance (Subst t a, Eq a) => Eq (Abs a) where
   NoAbs _ a == NoAbs _ b = a == b
   Abs   _ a == Abs   _ b = a == b
@@ -1330,13 +1403,6 @@ unSpine' p v =
         Proj o f : es' | p o -> loop (Def f) [Apply (defaultArg v)] es'
         e        : es'       -> loop h (e : res) es'
       where v = h $ reverse res
-
-{- PROBABLY USELESS
-getElims :: Term -> (Elims -> Term, Elims)
-getElims v = maybe default id $ hasElims v
-  where
-    default = (\ [] -> v, [])
--}
 
 -- | A view distinguishing the neutrals @Var@, @Def@, and @MetaV@ which
 --   can be projected.

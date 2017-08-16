@@ -41,6 +41,7 @@ data FlexibleVarKind
       --   Saves the 'FlexibleVarKind' of its subpatterns.
   | ImplicitFlex -- ^ From a hidden formal argument or underscore ('WildP').
   | DotFlex      -- ^ From a dot pattern ('DotP').
+  | OtherFlex    -- ^ From a non-record constructor or literal ('ConP' or 'LitP').
   deriving (Eq, Show)
 
 -- | Flexible variables are equipped with information where they come from,
@@ -102,6 +103,9 @@ instance ChooseFlex FlexibleVarKind where
   chooseFlex (RecordFlex xs) y               = chooseFlex xs (repeat y)
   chooseFlex x               (RecordFlex ys) = chooseFlex (repeat x) ys
   chooseFlex ImplicitFlex    ImplicitFlex    = ChooseEither
+  chooseFlex ImplicitFlex    _               = ChooseLeft
+  chooseFlex _               ImplicitFlex    = ChooseRight
+  chooseFlex OtherFlex       OtherFlex       = ChooseEither
 
 instance ChooseFlex a => ChooseFlex [a] where
   chooseFlex xs ys = mconcat $ zipWith chooseFlex xs ys
@@ -113,13 +117,13 @@ instance ChooseFlex a => ChooseFlex (Maybe a) where
   chooseFlex (Just x) (Just y) = chooseFlex x y
 
 instance ChooseFlex Hiding where
-  chooseFlex Hidden   Hidden   = ChooseEither
-  chooseFlex Hidden   _        = ChooseLeft
-  chooseFlex _        Hidden   = ChooseRight
-  chooseFlex Instance Instance = ChooseEither
-  chooseFlex Instance _        = ChooseLeft
-  chooseFlex _        Instance = ChooseRight
-  chooseFlex _        _        = ChooseEither
+  chooseFlex Hidden     Hidden     = ChooseEither
+  chooseFlex Hidden     _          = ChooseLeft
+  chooseFlex _          Hidden     = ChooseRight
+  chooseFlex Instance{} Instance{} = ChooseEither
+  chooseFlex Instance{} _          = ChooseLeft
+  chooseFlex _          Instance{} = ChooseRight
+  chooseFlex _          _          = ChooseEither
 
 instance ChooseFlex Origin where
   chooseFlex Inserted  Inserted  = ChooseEither
@@ -299,8 +303,8 @@ instance PrettyTCM AsBinding where
 
 instance PP.Pretty AsBinding where
   pretty (AsB x v a) =
-    PP.text (show x ++ " =") PP.<+> PP.hang (PP.pretty v PP.<+> PP.text ":") 2
-                                            (PP.pretty a)
+    PP.pretty x PP.<+> PP.text "=" PP.<+>
+      PP.hang (PP.pretty v PP.<+> PP.text ":") 2 (PP.pretty a)
 
 instance InstantiateFull AsBinding where
   instantiateFull' (AsB x v a) = AsB x <$> instantiateFull' v <*> instantiateFull' a

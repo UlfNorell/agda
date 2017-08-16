@@ -15,7 +15,7 @@ import Control.Monad.Identity
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.List hiding (null)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Traversable hiding (mapM, forM, for)
 import Data.Monoid
@@ -438,10 +438,10 @@ instance (Show a,Show b) => Show (OutputConstraint a b) where
     show (IsEmptyType a)        = "Is empty: " ++ show a
     show (SizeLtSat a)          = "Not empty type of sizes: " ++ show a
     show (FindInScopeOF s t cs) = "Resolve instance argument " ++ showCand (s,t) ++ ".\n  Candidates:\n    [ " ++
-                                    intercalate "\n    , " (map showCand cs) ++ " ]"
-      where showCand (tm,ty) = indent 6 $ show tm ++ " : " ++ show ty
-            indent n s = intercalate ("\n" ++ replicate n ' ') (l:ls)
-              where l:ls = lines s
+                                    List.intercalate "\n    , " (map showCand cs) ++ " ]"
+      where
+      showCand (tm,ty) = indent 6 $ show tm ++ " : " ++ show ty
+      indent n s = List.intercalate ("\n" ++ replicate n ' ') $ lines s
 
 instance (ToConcrete a c, ToConcrete b d) =>
          ToConcrete (OutputForm a b) (OutputForm c d) where
@@ -834,7 +834,7 @@ introTactic pmLambda ii = do
       hfs <- getRecordFieldNames d
       fs <- ifM showImplicitArguments
             (return $ map unArg hfs)
-            (return [ unArg a | a <- hfs, getHiding a == NotHidden ])
+            (return [ unArg a | a <- hfs, visible a ])
       let e = C.Rec noRange $ for fs $ \ f ->
             Left $ C.FieldAssignment f $ C.QuestionMark noRange Nothing
       return [ prettyShow e ]

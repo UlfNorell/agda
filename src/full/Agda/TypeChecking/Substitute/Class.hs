@@ -55,9 +55,9 @@ class Abstract t where
 -- For terms:
 --
 --  Γ ⊢ ρ : Δ
---  Δ ⊢ t : σ
+--  Δ ⊢ t : A
 -- -----------
--- Γ ⊢ tρ : σρ
+-- Γ ⊢ tρ : Aρ
 
 class DeBruijn t => Subst t a | a -> t where
   applySubst :: Substitution' t -> a -> a
@@ -95,7 +95,7 @@ wkS :: Int -> Substitution' a -> Substitution' a
 wkS n _ | n < 0  = __IMPOSSIBLE__
 wkS 0 rho        = rho
 wkS n (Wk m rho) = Wk (n + m) rho
-wkS n EmptyS     = EmptyS
+wkS n (EmptyS err) = EmptyS err
 wkS n rho        = Wk n rho
 
 raiseS :: Int -> Substitution' a
@@ -146,13 +146,13 @@ dropS n (u :# rho)         = dropS (n - 1) rho
 dropS n (Strengthen _ rho) = dropS (n - 1) rho
 dropS n (Lift 0 rho)       = __IMPOSSIBLE__
 dropS n (Lift m rho)       = wkS 1 $ dropS (n - 1) $ liftS (m - 1) rho
-dropS n EmptyS             = __IMPOSSIBLE__
+dropS n (EmptyS err)       = __IMPOSSIBLE__
 
 -- | @applySubst (ρ `composeS` σ) v == applySubst ρ (applySubst σ v)@
 composeS :: Subst a a => Substitution' a -> Substitution' a -> Substitution' a
 composeS rho IdS = rho
 composeS IdS sgm = sgm
-composeS rho EmptyS = EmptyS
+composeS rho (EmptyS err) = EmptyS err
 composeS rho (Wk n sgm) = composeS (dropS n rho) sgm
 composeS (Wk n rho) sgm = wkS n (composeS rho sgm)
 composeS rho (u :# sgm) =
@@ -168,14 +168,14 @@ composeS rho (Lift n sgm) = lookupConsS rho 0 $ composeS rho (wkS 1 (liftS (n - 
 --   Γ ⊢ σ : Δ
 --   Γ ⊢ δ : Θσ
 splitS :: Int -> Substitution' a -> (Substitution' a, Substitution' a)
-splitS 0 rho                  = (rho, EmptyS)
+splitS 0 rho                  = (rho, EmptyS __IMPOSSIBLE__)
 splitS n (u :# rho)           = second (u :#) $ splitS (n - 1) rho
 splitS n (Strengthen err rho) = second (Strengthen err) $ splitS (n - 1) rho
 splitS n (Lift 0 _)           = __IMPOSSIBLE__
 splitS n (Wk m rho)           = wkS m *** wkS m $ splitS n rho
-splitS n IdS                  = (raiseS n, liftS n EmptyS)
+splitS n IdS                  = (raiseS n, liftS n $ EmptyS __IMPOSSIBLE__)
 splitS n (Lift m rho)         = wkS 1 *** liftS 1 $ splitS (n - 1) (liftS (m - 1) rho)
-splitS n EmptyS               = __IMPOSSIBLE__
+splitS n (EmptyS err)         = __IMPOSSIBLE__
 
 infixr 4 ++#
 
@@ -220,7 +220,7 @@ lookupS rho i = case rho of
              | otherwise -> lookupS rho (i - 1)
   Lift n rho | i < n     -> deBruijnVar i
              | otherwise -> raise n $ lookupS rho (i - n)
-  EmptyS                 -> __IMPOSSIBLE__
+  EmptyS err             -> absurd err
 
 lookupS' :: Subst a a => Empty -> Substitution' a -> Nat -> a
 lookupS' err rho i =
@@ -247,7 +247,7 @@ lookupConsS rho i sgm = case rho of
              | otherwise -> lookupConsS rho (i - 1) sgm
   Lift n rho | i < n     -> deBruijnVar i :# sgm
              | otherwise -> raiseTop n $ lookupConsS rho (i - n) sgm
-  EmptyS                 -> Strengthen __IMPOSSIBLE__ sgm
+  EmptyS err             -> Strengthen err sgm
   where
     raiseTop n sgm@Strengthen{} = sgm
     raiseTop n (u :# sgm)       = raise n u :# sgm

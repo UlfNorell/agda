@@ -27,7 +27,6 @@ import Agda.Syntax.Translation.InternalToAbstract
 import Agda.Syntax.Translation.ReflectedToAbstract
 
 import Agda.TypeChecking.CompiledClause
-import Agda.TypeChecking.Datatypes ( getConHead )
 import Agda.TypeChecking.DropArgs
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Level
@@ -53,18 +52,20 @@ import Agda.Utils.Except
   , ExceptT
   , runExceptT
   )
-import Agda.Utils.Impossible
+import Agda.Utils.Either
+import Agda.Utils.FileName
+import Agda.Utils.Lens
 import Agda.Utils.Maybe
+import Agda.Utils.Maybe.Strict (toLazy)
 import Agda.Utils.Monad
 import Agda.Utils.Permutation ( Permutation(Perm), compactP )
+import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.String ( Str(Str), unStr )
 import Agda.Utils.VarSet (VarSet)
 import qualified Agda.Utils.VarSet as Set
-import Agda.Utils.Maybe.Strict (toLazy)
-import Agda.Utils.FileName
-import Agda.Utils.Lens
 
 #include "undefined.h"
+import Agda.Utils.Impossible
 
 agdaTermType :: TCM Type
 agdaTermType = El (mkType 0) <$> primAgdaTerm
@@ -104,7 +105,7 @@ runUnquoteM m = do
     isDefined x = do
       def <- theDef <$> getConstInfo x
       case def of
-        Function{funClauses = []} -> genericError $ "Missing definition for " ++ show x
+        Function{funClauses = []} -> genericError $ "Missing definition for " ++ prettyShow x
         _       -> return ()
 
 liftU :: TCM a -> UnquoteM a
@@ -156,7 +157,7 @@ choice ((mb, mx) : mxs) dflt = ifM mb mx $ choice mxs dflt
 
 ensureDef :: QName -> UnquoteM QName
 ensureDef x = do
-  i <- liftU $ (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  i <- liftU $ either (const Axiom) theDef <$> getConstInfo' x  -- for recursive unquoteDecl
   case i of
     Constructor{} -> do
       def <- liftU $ prettyTCM =<< primAgdaTermDef
@@ -166,7 +167,7 @@ ensureDef x = do
 
 ensureCon :: QName -> UnquoteM QName
 ensureCon x = do
-  i <- liftU $ (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  i <- liftU $ either (const Axiom) theDef <$> getConstInfo' x  -- for recursive unquoteDecl
   case i of
     Constructor{} -> return x
     _ -> do
@@ -189,7 +190,7 @@ instance Unquote ArgInfo where
     case ignoreSharing t of
       Con c _ [h,r] -> do
         choice
-          [(c `isCon` primArgArgInfo, ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected <*> pure False)]
+          [(c `isCon` primArgArgInfo, ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected)]
           __IMPOSSIBLE__
       Con c _ _ -> __IMPOSSIBLE__
       _ -> throwError $ NonCanonical "arg info" t
@@ -294,7 +295,7 @@ instance Unquote Hiding where
       Con c _ [] -> do
         choice
           [(c `isCon` primHidden,  return Hidden)
-          ,(c `isCon` primInstance, return Instance)
+          ,(c `isCon` primInstance, return (Instance NoOverlap))
           ,(c `isCon` primVisible, return NotHidden)]
           __IMPOSSIBLE__
       Con c _ vs -> __IMPOSSIBLE__
@@ -505,7 +506,9 @@ evalTCM v = do
              , (f `isDef` primAgdaTCMTypeError,   tcFun1 tcTypeError   u)
              , (f `isDef` primAgdaTCMQuoteTerm,   tcQuoteTerm (unElim u))
              , (f `isDef` primAgdaTCMUnquoteTerm, tcFun1 (tcUnquoteTerm (mkT (unElim l) (unElim a))) u)
-             , (f `isDef` primAgdaTCMBlockOnMeta, uqFun1 tcBlockOnMeta u) ]
+             , (f `isDef` primAgdaTCMBlockOnMeta, uqFun1 tcBlockOnMeta u)
+             , (f `isDef` primAgdaTCMDebugPrint,  tcFun3 tcDebugPrint l a u)
+             ]
              failEval
     I.Def f [_, _, u, v] ->
       choice [ (f `isDef` primAgdaTCMCatchError,    tcCatchError    (unElim u) (unElim v))
@@ -554,8 +557,18 @@ evalTCM v = do
       b <- unquote (unElim b)
       fun a b
 
+    uqFun3 :: (Unquote a, Unquote b, Unquote c) => (a -> b -> c -> UnquoteM d) -> Elim -> Elim -> Elim -> UnquoteM d
+    uqFun3 fun a b c = do
+      a <- unquote (unElim a)
+      b <- unquote (unElim b)
+      c <- unquote (unElim c)
+      fun a b c
+
     tcFun2 :: (Unquote a, Unquote b) => (a -> b -> TCM c) -> Elim -> Elim -> UnquoteM c
     tcFun2 fun = uqFun2 (\ x y -> liftU (fun x y))
+
+    tcFun3 :: (Unquote a, Unquote b, Unquote c) => (a -> b -> c -> TCM d) -> Elim -> Elim -> Elim -> UnquoteM d
+    tcFun3 fun = uqFun3 (\ x y z -> liftU (fun x y z))
 
     tcFreshName :: Str -> TCM Term
     tcFreshName s = do
@@ -585,6 +598,11 @@ evalTCM v = do
 
     tcTypeError :: [ErrorPart] -> TCM a
     tcTypeError err = typeError . GenericDocError =<< fsep (map prettyTCM err)
+
+    tcDebugPrint :: Str -> Integer -> [ErrorPart] -> TCM Term
+    tcDebugPrint (Str s) n msg = do
+      reportSDoc s (fromIntegral n) $ fsep (map prettyTCM msg)
+      primUnitUnit
 
     tcInferType :: R.Term -> TCM Term
     tcInferType v = do
@@ -643,8 +661,8 @@ evalTCM v = do
         go (a : as) m = extendCxt a $ go as m
 
     constInfo :: QName -> TCM Definition
-    constInfo x = getConstInfo x `catchError` \ _ ->
-                  genericError $ "Unbound name: " ++ show x
+    constInfo x = either err return =<< getConstInfo' x
+      where err _ = genericError $ "Unbound name: " ++ prettyShow x
 
     tcGetType :: QName -> TCM Term
     tcGetType x = quoteType . defType =<< constInfo x
@@ -666,24 +684,26 @@ evalTCM v = do
     tcDeclareDef :: Arg QName -> R.Type -> UnquoteM Term
     tcDeclareDef (Arg i x) a = inOriginalContext $ do
       setDirty
-      let h = getHiding i
-          r = getRelevance i
-      when (h == Hidden) $ liftU $ typeError . GenericDocError =<< text "Cannot declare hidden function" <+> prettyTCM x
+      let r = getRelevance i
+      when (hidden i) $ liftU $ typeError . GenericDocError =<<
+        text "Cannot declare hidden function" <+> prettyTCM x
       tell [x]
       liftU $ do
-        reportSDoc "tc.unquote.decl" 10 $ sep [ text "declare" <+> prettyTCM x <+> text ":"
-                                              , nest 2 $ prettyTCM a ]
+        reportSDoc "tc.unquote.decl" 10 $ sep
+          [ text "declare" <+> prettyTCM x <+> text ":"
+          , nest 2 $ prettyTCM a
+          ]
         a <- isType_ =<< toAbstract_ a
-        alreadyDefined <- isJust <$> tryMaybe (getConstInfo x)
-        when alreadyDefined $ genericError $ "Multiple declarations of " ++ show x
+        alreadyDefined <- isRight <$> getConstInfo' x
+        when alreadyDefined $ genericError $ "Multiple declarations of " ++ prettyShow x
         addConstant x $ defaultDefn i x a emptyFunction
-        when (h == Instance) $ addTypedInstance x a
+        when (isInstance i) $ addTypedInstance x a
         primUnitUnit
 
     tcDefineFun :: QName -> [R.Clause] -> UnquoteM Term
     tcDefineFun x cs = inOriginalContext $ (setDirty >>) $ liftU $ do
-      _ <- getConstInfo x `catchError` \ _ ->
-        genericError $ "Missing declaration for " ++ show x
+      whenM (isLeft <$> getConstInfo' x) $
+        genericError $ "Missing declaration for " ++ prettyShow x
       cs <- mapM (toAbstract_ . QNamed x) cs
       reportSDoc "tc.unquote.def" 10 $ vcat $ map prettyA cs
       let i = mkDefInfo (nameConcrete $ qnameName x) noFixity' PublicAccess ConcreteDef noRange
