@@ -394,10 +394,16 @@ filterResetingState m cands f = disableDestructiveUpdate $ do
       noMaybes = null [ Maybe | (_, ((Maybe, _, _), _)) <- result ]
             -- It's not safe to compare maybes for equality because they might
             -- not have instantiated at all.
-  result <- if noMaybes then dropSameCandidates m result' else return result'
-  case result of
+  result' <- if noMaybes then dropSameCandidates m result' else return result'
+  case result' of
     [(c, _, _, s)] -> [c] <$ put s
-    _              -> return [ c | (c, _, _, _) <- result ]
+    [] ->
+      -- If there's a unique plausible candidate, show the error for that
+      -- candidate instead of 'No instance found'.
+      case [ err | (_, ((NoBecause err, _, _), _)) <- result ] of
+        [err] -> throwError err
+        _     -> return []
+    _  -> return [ c | (c, _, _, _) <- result' ]
 
 -- Drop all candidates which are judgmentally equal to the first one.
 -- This is sufficient to reduce the list to a singleton should all be equal.
@@ -438,12 +444,15 @@ dropSameCandidates m cands0 = verboseBracket "tc.instance" 30 "dropSameCandidate
                              {- else -} (\ _ -> return False)
                              `catchError` (\ _ -> return False)
 
-data YesNoMaybe = Yes | No | Maybe | HellNo TCErr
+data YesNoMaybe = Yes | No | Maybe
+                | NoBecause TCErr -- ^ Could conceivably have worked. Show this error instead of 'no instance found'.
+                | HellNo TCErr    -- ^ Hard failure. Used for search depth exhausted.
   deriving (Show)
 
 isNo :: YesNoMaybe -> Bool
-isNo No = True
-isNo _  = False
+isNo No          = True
+isNo NoBecause{} = True
+isNo _           = False
 
 -- | Given a meta @m@ of type @t@ and a list of candidates @cands@,
 -- @checkCandidates m t cands@ returns a refined list of valid candidates.
@@ -525,6 +534,10 @@ checkCandidates m t cands = disableDestructiveUpdate $
             -- to prevent loops. We currently also ignore UnBlock constraints
             -- to be on the safe side.
             debugConstraints
+
+            -- If we get here we have a plausible candidate. Any error after this point
+            -- is more informative than a 'No instance found' error.
+            flip catchError (return . mkError) $ do
             solveAwakeConstraints' True
 
             verboseS "tc.instance" 15 $ do
@@ -538,12 +551,17 @@ checkCandidates m t cands = disableDestructiveUpdate $
                   reportSDoc "tc.instance" 15 $
                     sep [ text "instance search: found solution for" <+> prettyTCM m <> text ":"
                         , nest 2 $ prettyTCM sol ]
+            return Yes
         where
-          runCandidateCheck check =
-            flip catchError handle $
-            ifNoConstraints_ check
-              (return Yes)
-              (\ _ -> Maybe <$ reportSLn "tc.instance" 50 "assignment inconclusive")
+          runCandidateCheck check = do
+            r <- flip catchError handle $ ifNoConstraints check return
+                  (\ _ _ -> Maybe <$ reportSLn "tc.instance" 50 "assignment inconclusive")
+            reportSLn "tc.instance" 50 $ "candidate check returns " ++ show r
+            return r
+
+          mkError :: TCErr -> YesNoMaybe
+          mkError err | hardFailure err = HellNo err
+                      | otherwise       = NoBecause err
 
           hardFailure :: TCErr -> Bool
           hardFailure (TypeError _ err) =
