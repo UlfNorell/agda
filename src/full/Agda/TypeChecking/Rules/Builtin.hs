@@ -631,7 +631,7 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
 
 -- | Bind a builtin thing to an expression.
 bindBuiltin :: String -> A.Expr -> TCM ()
-bindBuiltin b e = do
+bindBuiltin b e = errorWarningsToErrors $ do
   unlessM ((0 ==) <$> getContextSize) $ typeError $ BuiltinInParameterisedModule b
   if | b == builtinRefl  -> warning $ OldBuiltin b builtinEquality
      | b == builtinZero  -> nowNat b
