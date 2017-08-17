@@ -2,3 +2,27 @@ Issue735.agda:16,12-16
 ((A₁ : Set _9) → Set _9) !=< Set _9 of type
 Set (Common.Level.lsuc _9)
 when checking that the expression List has type Set _9
+Issue735.agda:16,19-23
+((A₁ : Set _11) → Set _11) !=< Set _11 of type
+Set (Common.Level.lsuc _11)
+when checking that the expression List has type Set _11
+Issue735.agda:16,26-30
+(A₁ : Set _13) → Set _13 !=< Set _13 of type
+Set (Common.Level.lsuc _13)
+when checking that the expression List has type Set _13
+Failed to solve the following constraints:
+  _27 := (_24 ∷ []) ++ (_26 ∷ []) [blocked on problem 23]
+  [23, 25] _16 =< Nat : Set _9
+  _9 = Common.Level.lzero
+  _25 := 3 [blocked on problem 20]
+  [20] Nat =< _16 : Set
+  Common.Level.lzero = _9
+  _23 := 5 [blocked on problem 17]
+  [17] Nat =< _16 : Set
+Unsolved metas at the following locations:
+  Issue735.agda:16,12-16
+  Issue735.agda:17,5-24
+  Issue735.agda:24,17-19
+  Issue735.agda:24,9-10
+  Issue735.agda:24,21-22
+  Issue735.agda:24,9-27

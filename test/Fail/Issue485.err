@@ -1,3 +1,5 @@
-Issue485.agda:6,14-15
-Set₁ != Set
-when checking that the expression A has type Set
+Issue485.agda:6,10-15
+Set != Set₁
+when checking that the expression f _ A has type Set
+Unsolved metas at the following locations:
+  Issue485.agda:6,1-15

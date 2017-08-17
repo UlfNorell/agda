@@ -1,3 +1,18 @@
 Issue543a.agda:33,50-54
 true != .(true) of type Bool
 when checking that the expression refl has type true ≡ .(true)
+Issue543a.agda:36,52-56
+.(false) != false of type Bool
+when checking that the expression refl has type .(false) ≡ false
+Issue543a.agda:43,10-19
+.(true ≡ .(true)) !=< _x_32 ≡ _y_33 of type Set
+when checking that the expression elem bad1 has type _x_32 ≡ _y_33
+Issue543a.agda:43,46-55
+.(.(false) ≡ false) !=< .(false) ≡ _z_29 of type Set
+when checking that the expression elem bad2 has type
+.(false) ≡ _z_29
+Unsolved metas at the following locations:
+  Issue543a.agda:33,50-54
+  Issue543a.agda:36,52-56
+  Issue543a.agda:43,10-19
+  Issue543a.agda:43,46-55

@@ -1,3 +1,18 @@
 Issue2301.agda:12,11-15
 A → Box A !=< .A → Box A
 when checking that the expression wrap has type .A → Box A
+Issue2301.agda:24,27-34
+.(_19 _) → Box (_19 _) !=< Box (_A_18 _) of type Set
+when checking that the expression weird a has type Box (_A_18 _)
+Issue2301.agda:40,23-25
+Bool !=< Set of type Set
+when checking that the expression tt has type Set
+Issue2301.agda:40,34-36
+Bool !=< Set of type Set
+when checking that the expression ff has type Set
+Issue2301.agda:41,5-17
+weird _31 ≡ weird _31 should be empty, but the following
+constructor patterns are valid:
+  refl
+when checking that the clause different () has type
+weird _31 ≡ weird _31 → X

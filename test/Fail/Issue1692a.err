@@ -1,3 +1,9 @@
 Issue1692a.agda:14,30-33
 a != b of type A
 when checking that the expression f b has type b ≡ b
+Issue1692a.agda:24,29-32
+a != b of type A
+when checking that the expression f b has type b ≡ b
+Unsolved metas at the following locations:
+  Issue1692a.agda:14,1-33
+  Issue1692a.agda:24,1-32

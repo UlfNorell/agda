@@ -1,3 +1,5 @@
-Issue279.agda:20,10-12
-The constructor tt does not construct an element of ⊥
-when checking that the expression tt has type ⊥
+Issue279.agda:20,7-12
+⊥ !=< ⊤ of type Set
+when checking that the expression tt tt has type M.P ⊤ tt
+Unsolved metas at the following locations:
+  Issue279.agda:20,1-12
