@@ -536,7 +536,7 @@ evalTCM v = do
     -- Don't catch Unquote errors!
     tcCatchError :: Term -> Term -> UnquoteM Term
     tcCatchError m h =
-      liftU2 (\ m1 m2 -> m1 `catchError` \ _ -> m2) (evalTCM m) (evalTCM h)
+      liftU2 (\ m1 m2 -> errorWarningsToErrors m1 `catchError` \ _ -> m2) (evalTCM m) (evalTCM h)
 
     tcWithNormalisation :: Term -> Term -> UnquoteM Term
     tcWithNormalisation b m = do

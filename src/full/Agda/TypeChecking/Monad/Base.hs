@@ -3148,6 +3148,18 @@ warning w = do
     LeaveAlone -> raiseWarning tcwarn
   where raiseWarning tcw = stTCWarnings %= (tcw :)
 
+-- | Turn error warnings to actual errors. This is important in cases where we
+--   want to handle errors, such as in instance search or in tactics programs
+--   using catchTC.
+errorWarningsToErrors :: TCM a -> TCM a
+errorWarningsToErrors m = do
+  n  <- length <$> use stTCWarnings
+  x  <- m
+  ws <- use stTCWarnings
+  case filter ((ErrorWarnings ==) . classifyWarning . tcWarning) (drop n $ reverse ws) of
+    []   -> return x
+    errs -> typeError $ NonFatalErrors errs
+
 -- | Running the type checking monad (most general form).
 {-# SPECIALIZE runTCM :: TCEnv -> TCState -> TCM a -> IO (a, TCState) #-}
 runTCM :: MonadIO m => TCEnv -> TCState -> TCMT m a -> m (a, TCState)

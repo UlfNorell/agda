@@ -554,7 +554,7 @@ checkCandidates m t cands = disableDestructiveUpdate $
             return Yes
         where
           runCandidateCheck check = do
-            r <- flip catchError handle $ ifNoConstraints check return
+            r <- flip catchError handle $ ifNoConstraints (errorWarningsToErrors check) return
                   (\ _ _ -> Maybe <$ reportSLn "tc.instance" 50 "assignment inconclusive")
             reportSLn "tc.instance" 50 $ "candidate check returns " ++ show r
             return r
