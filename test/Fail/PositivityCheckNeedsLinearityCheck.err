@@ -1,3 +1,8 @@
 PositivityCheckNeedsLinearityCheck.agda:17,13-16
 Set₁ != Set₂
 when checking that the expression Set has type Set₂
+PositivityCheckNeedsLinearityCheck.agda:21,5-17
+Set₁ != Set
+when checking that the expression subst' p Set has type Set
+Unsolved metas at the following locations:
+  PositivityCheckNeedsLinearityCheck.agda:21,1-17

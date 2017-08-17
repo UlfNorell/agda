@@ -1,3 +1,5 @@
 Issue478c.agda:9,12-15
 Set₁ !=< Ko.T ko of type Set₂
 when checking that the expression Set has type Ko.T ko
+Unsolved metas at the following locations:
+  Issue478c.agda:9,1-15

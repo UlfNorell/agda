@@ -2,3 +2,6 @@ Issue2269.agda:13,8-10
 Instance search depth exhausted (max depth: 10) for candidate
 weaken : Eq ⊥ → Eq _5
 when checking that the expression it has type Eq ⊥
+Unsolved metas at the following locations:
+  Issue2269.agda:10,32-33
+  Issue2269.agda:13,1-10

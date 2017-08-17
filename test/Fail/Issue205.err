@@ -1,3 +1,5 @@
 Issue205.agda:12,13-14
 Set !=< .x ⊥ of type Set₁
 when checking that the expression ⊥ has type d .x * ⊥
+Unsolved metas at the following locations:
+  Issue205.agda:12,1-14

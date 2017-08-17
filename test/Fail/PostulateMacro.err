@@ -2,3 +2,5 @@ PostulateMacro.agda:15,8-19
 Cannot unquote non-canonical type checking computation
   stuck
 when checking that the expression unquote not-so-good has type Nat
+Unsolved metas at the following locations:
+  PostulateMacro.agda:15,8-19

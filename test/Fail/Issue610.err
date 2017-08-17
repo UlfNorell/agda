@@ -2,3 +2,10 @@ Issue610.agda:22,9-17
 Identifier R.helper is declared irrelevant, so it cannot be used
 here
 when checking that the expression R.helper x x has type Set
+Failed to solve the following constraints:
+  _21 := λ q → subst (λ x → x) q (_20 q) [blocked on problem 34]
+  [34] _4 (set _) =< ⊥ : Set
+Unsolved metas at the following locations:
+  Issue610.agda:22,1-21
+  Issue610.agda:32,29-30
+  Issue610.agda:32,11-30

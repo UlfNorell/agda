@@ -2,3 +2,5 @@ Issue1523c.agda:6,15-40
 Possibly empty type of sizes  (Size< i)
 when checking that the expression λ (j : Size< i) → fix t j has
 type (j : Size< i) → .C j
+Unsolved metas at the following locations:
+  Issue1523c.agda:6,15-40

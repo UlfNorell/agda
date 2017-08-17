@@ -7,3 +7,5 @@ adding section: M 1
 Issue2018debug.agda:14,8-11
 Set₁ != Set
 when checking that the expression Set has type Set
+Unsolved metas at the following locations:
+  Issue2018debug.agda:14,1-11

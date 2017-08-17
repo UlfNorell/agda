@@ -2,3 +2,5 @@ PolarityProjectionLike.agda:29,10-11
 .i != ↑ .i of type Size
 when checking that the expression x has type
 Contra true (mkType (D (↑ .i)))
+Unsolved metas at the following locations:
+  PolarityProjectionLike.agda:29,1-11

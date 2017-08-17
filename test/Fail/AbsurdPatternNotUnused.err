@@ -2,3 +2,5 @@ AbsurdPatternNotUnused.agda:15,12-16
 x != y of type ⊥
 when checking that the expression refl has type
 abort Bool x ≡ abort Bool y
+Unsolved metas at the following locations:
+  AbsurdPatternNotUnused.agda:15,1-16

@@ -1,3 +1,10 @@
 Issue551.agda:30,17-25
 No instance of type PackBool was found in scope.
 when checking that the expression implicit has type PackBool
+Failed to solve the following constraints:
+  _33 := cong (λ x → unpack (unirr x)) p [blocked on problem 54]
+  [54, 57] unpack (_a_26 _) = false : Bool
+  [54, 56] unpack (_a_26 _) = true : Bool
+Unsolved metas at the following locations:
+  Issue551.agda:30,17-25
+  Issue551.agda:35,5-36

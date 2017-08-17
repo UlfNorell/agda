@@ -2,3 +2,5 @@ RewritingRuleInWhereBlock.agda:15,13-17
 f (suc n) != g (suc n) of type Nat
 when checking that the expression refl has type
 f (suc n) ≡ g (suc n)
+Unsolved metas at the following locations:
+  RewritingRuleInWhereBlock.agda:15,1-20,23

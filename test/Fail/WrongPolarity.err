@@ -2,3 +2,5 @@ WrongPolarity.agda:25,23-36
 ↑ i !=< i of type Size
 when checking that the expression dumpNat {i} n has type
 Sink (Nat {↑ i})
+Unsolved metas at the following locations:
+  WrongPolarity.agda:25,1-36

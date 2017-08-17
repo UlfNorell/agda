@@ -2,3 +2,5 @@ Issue998d.agda:7,9-10
 ℓ != ℓ of type Level
 (because one is a variable and one a defined identifier)
 when checking that the expression A has type Set ℓ
+Unsolved metas at the following locations:
+  Issue998d.agda:7,1-10

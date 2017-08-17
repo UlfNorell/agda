@@ -3,3 +3,5 @@ ext (record { P = λ x → ⊤ → ⊤ ; g = λ x c → tt }) tt !=
 ext (record { P = λ x → ⊤ → ⊤ ; g = λ x c → tt }) tt tt of type
 ⊤ → ⊤
 when checking that the expression β-r tt has type ext a tt tt == tt
+Unsolved metas at the following locations:
+  Issue878.agda:30,1-13

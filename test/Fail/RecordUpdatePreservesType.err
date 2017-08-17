@@ -1,3 +1,5 @@
 RecordUpdatePreservesType.agda:18,14-17
 R !=< Q of type Set
 when checking that the expression old has type Q
+Unsolved metas at the following locations:
+  RecordUpdatePreservesType.agda:18,7-28

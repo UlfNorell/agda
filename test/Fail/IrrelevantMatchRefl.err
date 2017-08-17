@@ -1,3 +1,5 @@
 IrrelevantMatchRefl.agda:43,11-15
 D != D → D of type Set
 when checking that the expression refl has type K∞ ≡ abs (λ y → K∞)
+Unsolved metas at the following locations:
+  IrrelevantMatchRefl.agda:43,1-15

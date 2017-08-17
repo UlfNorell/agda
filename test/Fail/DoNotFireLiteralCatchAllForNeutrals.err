@@ -1,3 +1,5 @@
 DoNotFireLiteralCatchAllForNeutrals.agda:17,13-20
 ⊤ !=< NotNull s of type Set
 when checking that the expression trivial has type NotNull s
+Unsolved metas at the following locations:
+  DoNotFireLiteralCatchAllForNeutrals.agda:17,1-20

@@ -1,3 +1,9 @@
 Issue228.agda:19,5-18
 Set (lsuc lzero ⊔ ∞) != Set
 when checking that the expression Large × Small has type Set
+Issue228.agda:22,10-25
+Set (lsuc lzero ⊔ ∞) != Set
+when checking that the expression large , small A has type P
+Unsolved metas at the following locations:
+  Issue228.agda:19,1-18
+  Issue228.agda:22,1-25

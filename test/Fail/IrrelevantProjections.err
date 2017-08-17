@@ -2,3 +2,5 @@ IrrelevantProjections.agda:12,10-17
 Identifier inflate is declared irrelevant, so it cannot be used
 here
 when checking that the expression inflate x has type .A
+Unsolved metas at the following locations:
+  IrrelevantProjections.agda:12,1-19

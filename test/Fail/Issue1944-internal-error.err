@@ -1,3 +1,5 @@
 Issue1944-internal-error.agda:26,10-15
 Set₁ !=< R of type Set₂
 when checking that the expression out x has type R
+Unsolved metas at the following locations:
+  Issue1944-internal-error.agda:26,1-15

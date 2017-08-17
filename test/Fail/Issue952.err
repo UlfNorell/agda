@@ -3,3 +3,5 @@ Function does not accept argument {A₁ = _}
 when checking that {A₁ = Set} {B₁ = Set} are valid arguments to a
 function of type
 {A = A₁ : Set₁} {B = B₁ : Set₁} (C₁ : Set) → A₁ → B₁ → C₁
+Unsolved metas at the following locations:
+  Issue952.agda:7,3-35

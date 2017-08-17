@@ -2,3 +2,6 @@ SetOmega.agda:6,22-31
 Setω !=< Set _a_3
 because this would result in an invalid use of Setω
 when checking that the expression ∀ a → Set a has type Set _a_3
+Unsolved metas at the following locations:
+  SetOmega.agda:6,12-18
+  SetOmega.agda:6,22-31

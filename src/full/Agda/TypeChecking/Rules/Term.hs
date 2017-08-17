@@ -820,7 +820,7 @@ scopedExpr e                      = return e
 
 -- | Type check an expression.
 checkExpr :: A.Expr -> Type -> TCM Term
-checkExpr e t0 =
+checkExpr e t0 = flip typeErrorToWarning (snd <$> newValueMeta RunMetaOccursCheck t0) $
   verboseBracket "tc.term.expr.top" 5 "checkExpr" $
   traceCall (CheckExprCall e t0) $ localScope $ doExpandLast $ shared =<< do
     reportSDoc "tc.term.expr.top" 15 $

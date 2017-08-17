@@ -4,3 +4,5 @@ M0
 MD
 when checking that the expression
 record { M0 ; t2 = M0.t0 ; MD ; MI ; i0 = i0 } has type R
+Unsolved metas at the following locations:
+  RecordFromModuleAmb.agda:31,1-32,35

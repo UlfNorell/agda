@@ -1,3 +1,9 @@
 TypeConstructorsWhichPreserveGuardedness1.agda:32,10-16
 _A_18 ⊎ _B_19 !=< ℕ of type Set
 when checking that the expression inj₁ _ has type ℕ
+TypeConstructorsWhichPreserveGuardedness1.agda:35,11-24
+_A_21 n ⊎ Rec (_A_23 n) !=< ℕ of type Set
+when checking that the expression inj₂ (fold n) has type ℕ
+TypeConstructorsWhichPreserveGuardedness1.agda:41,16-22
+Type mismatch
+when checking that the pattern inj₁ _ has type ℕ

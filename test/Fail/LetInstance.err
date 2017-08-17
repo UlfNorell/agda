@@ -1,3 +1,5 @@
 LetInstance.agda:12,20-23
 No instance of type C A was found in scope.
 when checking that the expression foo has type A
+Unsolved metas at the following locations:
+  LetInstance.agda:12,20-23

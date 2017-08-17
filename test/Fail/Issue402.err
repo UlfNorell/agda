@@ -1,3 +1,5 @@
 Issue402.agda:13,12-16
 x != y of type Unit
 when checking that the expression refl has type x == y
+Unsolved metas at the following locations:
+  Issue402.agda:13,1-16

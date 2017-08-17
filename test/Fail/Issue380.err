@@ -3,3 +3,6 @@ Sigma (_a_30 y z == _a_30 y z) (_B_28 y z) !=<
 fst z == fst y → _26 y z == snd z
 when checking that the expression refl , refl has type
 fst z == fst y → _26 y z == snd z
+Unsolved metas at the following locations:
+  Issue380.agda:19,11-12
+  Issue380.agda:21,1-27

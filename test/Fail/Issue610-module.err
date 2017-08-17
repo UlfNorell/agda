@@ -2,3 +2,9 @@ Issue610-module.agda:27,8-40
 .(M.out _) !=< ⊥ of type Set
 when checking that the expression subst (λ x → x) (cong ack hah) _
 has type ⊥
+Issue610-module.agda:32,11-30
+.(M.out _) !=< ⊥ of type Set
+when checking that the expression subst (λ x → x) q _ has type ⊥
+Unsolved metas at the following locations:
+  Issue610-module.agda:27,1-40
+  Issue610-module.agda:32,1-30

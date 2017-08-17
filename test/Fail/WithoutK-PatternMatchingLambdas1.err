@@ -7,3 +7,5 @@ Possible reason why unification failed:
   Cannot eliminate reflexive equation x = x of type A because K has
   been disabled.
 when checking that the pattern refl has type x ≡ x
+Unsolved metas at the following locations:
+  WithoutK-PatternMatchingLambdas1.agda:11,1-29

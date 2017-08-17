@@ -1,3 +1,7 @@
 Issue892a.agda:11,7-10
 R → Set !=< Set of type Set₁
 when checking that the expression R.g has type Set
+Unsolved metas at the following locations:
+  Issue892a.agda:11,7-10
+Unsolved interaction metas at the following locations:
+  Issue892a.agda:12,7-8

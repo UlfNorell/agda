@@ -2,3 +2,5 @@ Issue1944-UnappliedOverloadedProjectionNotRecord.agda:15,8-9
 Cannot resolve overloaded projection f because principal argument
 is not of record type
 when checking that the expression f has type .A → .A
+Unsolved metas at the following locations:
+  Issue1944-UnappliedOverloadedProjectionNotRecord.agda:15,1-9

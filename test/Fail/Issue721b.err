@@ -1,3 +1,5 @@
 Issue721b.agda:15,12-13
 Bool !=< _*_ x ≡ (λ x₁ → x₁) of type Set
 when checking that the expression x has type _*_ x ≡ (λ x₁ → x₁)
+Unsolved metas at the following locations:
+  Issue721b.agda:15,1-16,19

@@ -1,3 +1,5 @@
 NoEtaInMutual.agda:24,10-14
 .x != .y of type ⊤
 when checking that the expression refl has type .x ≡ .y
+Unsolved metas at the following locations:
+  NoEtaInMutual.agda:24,3-14

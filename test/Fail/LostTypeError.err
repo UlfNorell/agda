@@ -1,3 +1,5 @@
 LostTypeError.agda:23,34-36
 x != y of type A
 when checking that the expression px has type P (box y)
+Unsolved metas at the following locations:
+  LostTypeError.agda:23,1-36

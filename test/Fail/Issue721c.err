@@ -1,3 +1,5 @@
 Issue721c.agda:20,30-31
 Bool !=< (t ≡ t) of type Set
 when checking that the expression t has type t ≡ t
+Unsolved metas at the following locations:
+  Issue721c.agda:20,30-31

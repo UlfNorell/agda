@@ -1,3 +1,5 @@
 NoSizedTypes.agda:10,10-11
 .i != ∞ of type Size
 when checking that the expression x has type Nat
+Unsolved metas at the following locations:
+  NoSizedTypes.agda:10,1-11

@@ -1,3 +1,5 @@
 Issue610-module-alias-with.agda:27,11-30
 .(M.out _) !=< ⊥ of type Set
 when checking that the expression subst (λ x → x) q _ has type ⊥
+Unsolved metas at the following locations:
+  Issue610-module-alias-with.agda:27,1-30

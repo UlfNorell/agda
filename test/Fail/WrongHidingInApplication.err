@@ -3,3 +3,5 @@ Found an implicit application where an explicit application was
 expected
 when checking that {A} x are valid arguments to a function of type
 (A₁ : Set) → A₁ → A₁
+Unsolved metas at the following locations:
+  WrongHidingInApplication.agda:8,1-19

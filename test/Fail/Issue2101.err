@@ -1,3 +1,10 @@
 Issue2101.agda:61,29-30
 B !=< (Wrap (_A_17 A)) of type Set
 when checking that the expression b has type Wrap (_A_17 A)
+Issue2101.agda:66,11-22
+M.B .A !=< Wrap _A_25 of type Set
+when checking that the expression Wrap.unwrap has type M.B .A → .A
+Unsolved metas at the following locations:
+  Issue2101.agda:61,14-15
+  Issue2101.agda:61,29-30
+  Issue2101.agda:66,1-22

@@ -3,3 +3,7 @@ tt != ff of type Bool
 when checking that the expression
 refl {x = ap {A = Bool→cBool} (λ f → f tt) p} has type
 ap (λ f → f tt) p ≡ ap (λ f → f ff) p
+Issue2480false.agda:29,1-13
+Cannot eliminate type _33 with pattern tt (did you supply too many
+arguments?)
+when checking that the clause swap tt = ff has type Bool→cBool

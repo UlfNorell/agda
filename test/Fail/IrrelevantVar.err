@@ -1,3 +1,5 @@
 IrrelevantVar.agda:8,9-10
 Variable x is declared irrelevant, so it cannot be used here
 when checking that the expression x has type .A
+Unsolved metas at the following locations:
+  IrrelevantVar.agda:8,1-10

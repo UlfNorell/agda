@@ -1,3 +1,5 @@
 Issue2494-pattern-instance.agda:17,28-32
 Blue !=< Red of type Set
 when checking that the expression blue has type Red
+Unsolved metas at the following locations:
+  Issue2494-pattern-instance.agda:17,1-32

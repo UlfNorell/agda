@@ -225,7 +225,8 @@ findInScope' m cands = ifM (isFrozen m) (do
           Just [] -> do
             reportSDoc "tc.instance" 15 $
               text "findInScope 5: not a single candidate found..."
-            typeError $ IFSNoCandidateInScope t
+            warning $ ErrorWarning $ IFSNoCandidateInScope t
+            return Nothing
 
           Just [Candidate term t' _ _] -> do
             reportSDoc "tc.instance" 15 $ vcat

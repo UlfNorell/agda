@@ -1,3 +1,14 @@
 ExistentialsProjections.agda:12,18-26
 Variable fwitness is declared irrelevant, so it cannot be used here
 when checking that the expression fwitness has type A
+ExistentialsProjections.agda:19,50-57
+Identifier witness is declared irrelevant, so it cannot be used
+here
+when checking that the expression witness x has type A
+Failed to solve the following constraints:
+  _20 := λ {.A} {.P} .a p → p [blocked on problem 16]
+  [16, 17] _5 .A .P _ = _19 (exists _ p) : .A
+Unsolved metas at the following locations:
+  ExistentialsProjections.agda:12,18-26
+  ExistentialsProjections.agda:19,50-59
+  ExistentialsProjections.agda:20,24-25

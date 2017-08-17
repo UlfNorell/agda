@@ -3,3 +3,5 @@ de Bruijn index 3 is not in scope in the context
 (x : Set) (y : Set) (z : Set)
 when checking that the expression unquote (give (var 3 [])) has
 type Set
+Unsolved metas at the following locations:
+  TermSplicingOutOfScope.agda:7,1-36

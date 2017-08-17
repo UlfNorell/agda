@@ -1,3 +1,9 @@
 Issue1815.agda:20,24-25
 Set !=< (R2 (_A_11 A r)) of type Set₁
 when checking that the expression A has type R2 (_A_11 A r)
+Failed to solve the following constraints:
+  _13 := (_ : _A_11 A r) [r] :? A
+Unsolved metas at the following locations:
+  Issue1815.agda:20,18-23
+  Issue1815.agda:20,24-25
+  Issue1815.agda:20,18-27

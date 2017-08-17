@@ -2,3 +2,5 @@ TooManyFields.agda:10,7-28
 The record type D does not have the fields y
 when checking that the expression record { x = x ; y = x } has type
 D
+Unsolved metas at the following locations:
+  TooManyFields.agda:10,1-28

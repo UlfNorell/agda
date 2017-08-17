@@ -2,3 +2,6 @@ Issue1467.agda:25,14-19
 (D → D) × D != D → D of type Set
 when checking that the expression bar H has type
 P (foo (λ A → (A → A) × A))
+Unsolved metas at the following locations:
+  Issue1467.agda:24,11-12
+  Issue1467.agda:23,7-24,12

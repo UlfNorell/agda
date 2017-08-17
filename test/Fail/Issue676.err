@@ -2,3 +2,5 @@ Issue676.agda:23,9-13
 unsillify (fail x) != true of type Bool
 when checking that the expression refl has type
 unsillify (fail x) ≡ true
+Unsolved metas at the following locations:
+  Issue676.agda:23,1-13

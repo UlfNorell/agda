@@ -1,3 +1,13 @@
 Issue2408-error.agda:15,8-9
 Set (lsuc (l a)) != Set₁
 when checking that the expression F has type A → X
+Failed to solve the following constraints:
+  _6 := F [blocked on problem 3]
+  [3] Set (l a) =< _2 : Set (lsuc (l a))
+  lsuc (l a) = _5
+  dLub Set (λ a → Set (lsuc (l a))) = Set _5
+Unsolved metas at the following locations:
+  Issue2408-error.agda:13,7-8
+  Issue2408-error.agda:14,18-19
+  Issue2408-error.agda:15,8-9
+  Issue2408-error.agda:11,1-15,9

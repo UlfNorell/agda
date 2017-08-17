@@ -1,3 +1,8 @@
 IrrelevantLambda.agda:8,15-16
 Variable x is declared irrelevant, so it cannot be used here
 when checking that the expression x has type A
+Failed to solve the following constraints:
+  Is not empty type of sizes: _2
+Unsolved metas at the following locations:
+  IrrelevantLambda.agda:7,5-6
+  IrrelevantLambda.agda:8,15-16

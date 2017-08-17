@@ -3,3 +3,10 @@ Cannot eliminate type P .x with pattern {nat n} (did you supply too
 many arguments?)
 when checking that the clause .extendedlambda0 {nat n} = g has type
 P .x
+Failed to solve the following constraints:
+  _26 := refl [blocked on problem 37]
+  [37, 41] _22 = p : P (bool true)
+Unsolved metas at the following locations:
+  Issue2001.agda:23,11-12
+  Issue2001.agda:20,1-24,10
+  Issue2001.agda:27,9-13

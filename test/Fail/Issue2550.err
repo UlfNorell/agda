@@ -2,3 +2,5 @@ Issue2550.agda:43,13-17
 (λ { (r , refl) → proj₂ (P.f (from .q) r) }) x != proj₂ .q x of
 type R (proj₁ i) (proj₂ i)
 when checking that the expression refl has type to (from .q) ≡ .q
+Unsolved metas at the following locations:
+  Issue2550.agda:43,1-17
