@@ -3146,7 +3146,21 @@ warning w = do
                            AllWarnings -> return ()
     TurnIntoErrors -> typeError $ NonFatalErrors [tcwarn]
     LeaveAlone -> raiseWarning tcwarn
-  where raiseWarning tcw = stTCWarnings %= (tcw :)
+
+raiseWarning :: MonadTCM tcm => TCWarning -> tcm ()
+raiseWarning tcw = stTCWarnings %= (tcw :)
+
+-- | If the first computation throws a type error, issue the error as a warning
+-- and run the second computation.
+typeErrorToWarning :: TCM a -> TCM a -> TCM a
+typeErrorToWarning m h =
+  catchError m $ \ err ->
+    case err of
+      TypeError s err -> do
+        file <- rangeFile <$> view eRange
+        raiseWarning $ TCWarning file s (ErrorWarning <$> err)
+        h
+      _ -> throwError err
 
 -- | Turn error warnings to actual errors. This is important in cases where we
 --   want to handle errors, such as in instance search or in tactics programs
