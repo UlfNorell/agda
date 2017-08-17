@@ -64,6 +64,7 @@ instance EmbPrj Warning where
   icod_ (ParseWarning a)             = __IMPOSSIBLE__
   icod_ (DeprecationWarning a b c)   = icodeN 6 DeprecationWarning a b c
   icod_ (NicifierIssue a)            = icodeN 7 NicifierIssue a
+  icod_ ErrorWarning{}               = __IMPOSSIBLE__
 
   value = vcase valu where
       valu [0, a, b]    = valuN UnreachableClauses a b

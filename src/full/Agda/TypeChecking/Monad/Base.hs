@@ -2367,8 +2367,8 @@ data Warning
   | DeprecationWarning String String String
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
+  | ErrorWarning TypeError
   deriving ( Show
-           , Data
 #if __GLASGOW_HASKELL__ <= 708
            , Typeable
 #endif
@@ -2403,7 +2403,34 @@ instance Eq TCWarning where
             && getRange x == getRange y
 
 equalHeadConstructors :: Warning -> Warning -> Bool
-equalHeadConstructors = (==) `on` toConstr
+equalHeadConstructors = (==) `on` constrId
+  where
+    constrId w = case w of
+      NicifierIssue{}             -> 0
+      TerminationIssue{}          -> 1
+      UnreachableClauses{}        -> 2
+      CoverageIssue{}             -> 3
+      CoverageNoExactSplit{}      -> 4
+      NotStrictlyPositive{}       -> 5
+      UnsolvedMetaVariables{}     -> 6
+      UnsolvedInteractionMetas{}  -> 7
+      UnsolvedConstraints{}       -> 8
+      OldBuiltin{}                -> 9
+      EmptyRewritePragma{}        -> 10
+      UselessPublic{}             -> 11
+      UselessInline{}             -> 12
+      GenericWarning{}            -> 13
+      GenericNonFatalError{}      -> 14
+      SafeFlagPostulate{}         -> 15
+      SafeFlagPragma{}            -> 16
+      SafeFlagNonTerminating{}    -> 17
+      SafeFlagTerminating{}       -> 18
+      SafeFlagPrimTrustMe{}       -> 19
+      SafeFlagNoPositivityCheck{} -> 20
+      SafeFlagPolarity{}          -> 21
+      ParseWarning{}              -> 22
+      DeprecationWarning{}        -> 23
+      ErrorWarning{}              -> 24
 
 getPartialDefs :: ReadTCState tcm => tcm [QName]
 getPartialDefs = do
@@ -2457,6 +2484,7 @@ classifyWarning w = case w of
   SafeFlagNoPositivityCheck  -> ErrorWarnings
   SafeFlagPolarity           -> ErrorWarnings
   ParseWarning{}             -> ErrorWarnings
+  ErrorWarning{}             -> ErrorWarnings
 
 classifyWarnings :: [TCWarning] -> ([TCWarning], [TCWarning])
 classifyWarnings = List.partition $ (< AllWarnings) . classifyWarning . tcWarning

@@ -209,6 +209,8 @@ instance PrettyTCM Warning where
       for ws $ \ w -> do
         sayWhere (getRange w) $ pretty w
 
+    ErrorWarning err -> prettyTCM err
+
 prettyTCWarnings :: [TCWarning] -> TCM String
 prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
 
@@ -270,6 +272,7 @@ applyFlagsToTCWarnings ifs ws = do
           SafeFlagPolarity             -> True
           DeprecationWarning{}         -> True
           NicifierIssue{}              -> True
+          ErrorWarning{}               -> True
 
   return $ sfp ++ filter (cleanUp . tcWarning) ws
 

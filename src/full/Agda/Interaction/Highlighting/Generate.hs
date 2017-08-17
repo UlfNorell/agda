@@ -32,6 +32,7 @@ import Data.List ((\\), isPrefixOf)
 import qualified Data.Foldable as Fold (fold, foldMap)
 import qualified Data.IntMap as IntMap
 import Data.Void
+import Data.Traversable (traverse)
 
 import Agda.Interaction.Response (Response(Resp_HighlightingInfo))
 import Agda.Interaction.Highlighting.Precise
@@ -178,8 +179,8 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     cm <- P.rangeFile <$> view eRange
     reportSLn "highlighting.warning" 60 $ "current path = " ++ show cm
 
-    warnInfo <- Fold.foldMap warningHighlighting
-                 . filter ((cm ==) . tcWarningOrigin) <$> use stTCWarnings
+    warns <- filter ((cm ==) . tcWarningOrigin) <$> use stTCWarnings
+    warnInfo <- mconcat <$> mapM warningHighlighting warns
 
     let (from, to) = case P.rangeToInterval (P.getRange decl) of
           Nothing -> __IMPOSSIBLE__
@@ -546,33 +547,34 @@ errorHighlighting e = do
 
 -- | Generate syntax highlighting for warnings.
 
-warningHighlighting :: TCWarning -> File
+warningHighlighting :: TCWarning -> TCM File
 warningHighlighting w = case tcWarning w of
-  TerminationIssue terrs     -> terminationErrorHighlighting terrs
-  NotStrictlyPositive d ocs  -> positivityErrorHighlighting d ocs
-  UnreachableClauses{}       -> unreachableErrorHighlighting $ P.getRange w
-  CoverageIssue{}            -> coverageErrorHighlighting $ P.getRange w
-  CoverageNoExactSplit{}     -> catchallHighlighting $ P.getRange w
+  TerminationIssue terrs     -> return $ terminationErrorHighlighting terrs
+  NotStrictlyPositive d ocs  -> return $ positivityErrorHighlighting d ocs
+  UnreachableClauses{}       -> return $ unreachableErrorHighlighting $ P.getRange w
+  CoverageIssue{}            -> return $ coverageErrorHighlighting $ P.getRange w
+  CoverageNoExactSplit{}     -> return $ catchallHighlighting $ P.getRange w
   -- expanded catch-all case to get a warning for new constructors
-  UnsolvedMetaVariables{}    -> mempty
-  UnsolvedInteractionMetas{} -> mempty
-  UnsolvedConstraints{}      -> mempty
-  OldBuiltin{}               -> mempty
-  EmptyRewritePragma{}       -> mempty
-  UselessPublic{}            -> mempty
-  UselessInline{}            -> mempty
-  ParseWarning{}             -> mempty
-  GenericWarning{}           -> mempty
-  GenericNonFatalError{}     -> mempty
-  SafeFlagPostulate{}        -> mempty
-  SafeFlagPragma{}           -> mempty
-  SafeFlagNonTerminating     -> mempty
-  SafeFlagTerminating        -> mempty
-  SafeFlagPrimTrustMe        -> mempty
-  SafeFlagNoPositivityCheck  -> mempty
-  SafeFlagPolarity           -> mempty
-  DeprecationWarning{}       -> mempty
-  NicifierIssue{}            -> mempty
+  UnsolvedMetaVariables{}    -> return mempty
+  UnsolvedInteractionMetas{} -> return mempty
+  UnsolvedConstraints{}      -> return mempty
+  OldBuiltin{}               -> return mempty
+  EmptyRewritePragma{}       -> return mempty
+  UselessPublic{}            -> return mempty
+  UselessInline{}            -> return mempty
+  ParseWarning{}             -> return mempty
+  GenericWarning{}           -> return mempty
+  GenericNonFatalError{}     -> return mempty
+  SafeFlagPostulate{}        -> return mempty
+  SafeFlagPragma{}           -> return mempty
+  SafeFlagNonTerminating     -> return mempty
+  SafeFlagTerminating        -> return mempty
+  SafeFlagPrimTrustMe        -> return mempty
+  SafeFlagNoPositivityCheck  -> return mempty
+  SafeFlagPolarity           -> return mempty
+  DeprecationWarning{}       -> return mempty
+  NicifierIssue{}            -> return mempty
+  ErrorWarning err           -> errorHighlighting $ TypeError (tcWarningState w) (err <$ tcWarningClosure w)
 
 -- | Generate syntax highlighting for termination errors.
 
