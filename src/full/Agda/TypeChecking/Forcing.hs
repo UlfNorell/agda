@@ -214,8 +214,6 @@ unforce q (p : ps) =
       where
         qps        = unforce q (qs ++ ps)
         (qs', ps') = splitAt (length qs) qps
-    AbsurdP p1 -> (fmap . fmap) AbsurdP p1' : ps'
-      where p1' : ps' = unforce q (fmap (p1 <$) p : ps)
     LitP{} -> p : unforce q ps
     ProjP{} -> p : unforce q ps
   where
@@ -226,7 +224,6 @@ unforce q (p : ps) =
       VarP{}          -> p
       DotP{}          -> p
       ConP c i ps     -> ConP c i $ (fmap . fmap . fmap) (mkDot q) ps
-      AbsurdP p       -> AbsurdP (mkDot q p)
       LitP{}          -> p
       ProjP{}         -> p
 
@@ -262,6 +259,5 @@ forcedPatterns ps = concat <$> mapM (forced NotForced . namedArg) ps
           | otherwise   -> do
             fs <- defForced <$> getConstInfo (conName c)
             concat <$> zipWithM forced (fs ++ repeat NotForced) (map namedArg args)
-        AbsurdP{} -> return []
         LitP{}    -> return []
         ProjP{}   -> return []
