@@ -68,6 +68,7 @@ import Control.Monad.Reader
 
 import Data.Map (Map)
 import qualified Data.Map as Map
+import qualified Data.List as List
 import Data.Traversable (traverse)
 
 import System.IO.Unsafe
@@ -92,6 +93,7 @@ import Agda.TypeChecking.CompiledClause.Match
 
 import Agda.Interaction.Options
 
+import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Memo
 import Agda.Utils.Function
@@ -173,7 +175,7 @@ data FastCompiledClauses
   | FFail
     -- ^ Absurd case.
 
-type FastStack = [(FastCompiledClauses, MaybeReducedElims, Elims -> Elims)]
+type FastStack = [(FastCompiledClauses, [MaybeReduced (Elim' Value)], [Elim' Value] -> [Elim' Value])]
 
 fastCompiledClauses :: Maybe ConHead -> Maybe ConHead -> CompiledClauses -> FastCompiledClauses
 fastCompiledClauses z s cc =
@@ -273,8 +275,82 @@ fastReduce allowNonTerminating v = do
 unKleisli :: (a -> ReduceM b) -> ReduceM (a -> b)
 unKleisli f = ReduceM $ \ env x -> unReduceM (f x) env
 
+-- Not quite value..
+data Value = VCon ConHead ConInfo [Elim' Value]
+           | VVar {-# UNPACK #-} !Int [Elim' Value]
+           | VDef QName [Elim' Value]
+           | VLit Literal
+           | VClosure Substitution Term [Elim' Value] -- ?
+
+valueToTerm :: Value -> Term
+valueToTerm (VCon c i es)    = Con c i $ elimsToTerm es
+valueToTerm (VDef f es)      = Def f   $ elimsToTerm es
+valueToTerm (VVar x es)      = Var x   $ elimsToTerm es
+valueToTerm (VLit l)         = Lit l
+valueToTerm (VClosure sub v es) = applySubst sub v `applyE` elimsToTerm es
+
+elimsToTerm :: [Elim' Value] -> Elims
+elimsToTerm = (map . fmap) valueToTerm
+
+termToValue :: Term -> Value
+termToValue (Con c h es) = VCon c h $ (map . fmap) termToValue es
+termToValue (Def f es)   = VDef f $ (map . fmap) termToValue es
+termToValue (Var i es)   = VVar i $ (map . fmap) termToValue es
+termToValue (Lit l)      = VLit l
+termToValue v            = VClosure IdS v []
+
+closure :: Substitution -> Term -> Value
+closure sub t = VClosure sub t []
+
+pushSubst :: Value -> Value
+pushSubst (VClosure sub t es) = (`applyV` es) $
+  case t of
+    Con c h es -> VCon c h $ closE es
+    Def f es   -> VDef f   $ closE es
+    Lit l      -> VLit l
+    Var i es   -> termToValue (lookupS sub i) `applyV` closE es
+    _          -> closure sub t
+  where closE = (map . fmap) (closure sub)
+pushSubst v = v
+
+applyV :: Value -> [Elim' Value] -> Value
+applyV v []  = v
+applyV v es' = case v of
+  VCon c h es       -> conAppV c h es es'
+  VDef f es         -> defAppV f es es'
+  VVar x es         -> VVar x   $ es ++ es'
+  VLit l            -> __IMPOSSIBLE__
+  VClosure sub u es -> VClosure sub u $ es ++ es'
+
+canProjectV :: QName -> Value -> Maybe (Arg Value)
+canProjectV f v =
+  case v of
+    VCon (ConHead _ _ fs) _ vs -> do
+      i <- List.elemIndex f fs
+      isApplyElim =<< headMaybe (drop i vs)
+    _ -> Nothing
+
+conAppV :: ConHead -> ConInfo -> [Elim' Value] -> [Elim' Value] -> Value
+conAppV ch                  ci args []               = VCon ch ci args
+conAppV ch                  ci args (a@Apply{} : es) = conAppV ch ci (args ++ [a]) es --- !!!
+conAppV ch@(ConHead c _ fs) ci args (Proj o f : es)  = applyV v es
+  where
+    isApply e = fromMaybe __IMPOSSIBLE__ $ isApplyElim e
+    i = maybe __IMPOSSIBLE__ id $ List.elemIndex f fs
+    v = maybe __IMPOSSIBLE__ (argToDontCareV . isApply)  $ headMaybe $ drop i args
+
+defAppV :: QName -> [Elim' Value] -> [Elim' Value] -> Value
+defAppV f [] (Apply a : es) | Just v <- canProjectV f (unArg a)
+  = argToDontCareV v `applyV` es
+defAppV f es0 es = VDef f $ es0 ++ es
+
+argToDontCareV :: Arg Value -> Value
+argToDontCareV (Arg ai v)
+  | Irrelevant <- getRelevance ai = closure IdS (dontCare $ valueToTerm v)
+  | otherwise                     = v
+
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
+reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = fmap valueToTerm . reduceB' 0 . termToValue
   where
     -- Force substitutions every nth step to avoid memory leaks. Doing it in
     -- every is too expensive (issue 2215).
@@ -292,28 +368,28 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
         Nothing -> const False
         Just s  -> (conNameId s ==) . conNameId
 
+    reduceB' :: Int -> Value -> Blocked Value
     reduceB' steps v =
-      case v of
-        Def f es -> unfoldDefinitionE steps False reduceB' (Def f []) f es
-        Con c ci vs ->
+      case pushSubst v of
+        VDef f es -> unfoldDefinitionE steps False reduceB' (VDef f []) f es
+        VCon c ci vs ->
           -- Constructors can reduce' when they come from an
           -- instantiated module.
-          case unfoldDefinitionE steps False reduceB' (Con c ci []) (conName c) vs of
+          case unfoldDefinitionE steps False reduceB' (VCon c ci []) (conName c) vs of
             NotBlocked r v -> NotBlocked r $ reduceNat v
             b              -> b
-        Lit{} -> done
-        Var{} -> done
-        _     -> runReduce (slowReduceTerm v)
+        VLit{} -> notBlocked v
+        VVar{} -> notBlocked v
+        _      -> fmap termToValue $ runReduce (slowReduceTerm $ valueToTerm v)
       where
-        done = notBlocked v
-
-        reduceNat v@(Con c ci [])
-          | isZero c = Lit $ LitNat (getRange c) 0
-        reduceNat v@(Con c ci [Apply a])
+        reduceNat :: Value -> Value
+        reduceNat v@(VCon c ci [])
+          | isZero c = VLit $ LitNat (getRange c) 0
+        reduceNat v@(VCon c ci [Apply a])
           | isSuc c  = inc . ignoreBlocking $ reduceB' 0 (unArg a)
           where
-            inc (Lit (LitNat r n)) = Lit (LitNat noRange $ n + 1)
-            inc w                  = Con c ci [Apply $ defaultArg w]
+            inc (VLit (LitNat r n)) = VLit (LitNat noRange $ n + 1)
+            inc w                   = VCon c ci [Apply $ defaultArg w]
         reduceNat v = v
 
     originalProjection :: QName -> QName
@@ -324,34 +400,32 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
 
     -- Andreas, 2013-03-20 recursive invokations of unfoldCorecursion
     -- need also to instantiate metas, see Issue 826.
-    unfoldCorecursionE :: Elim -> Blocked Elim
+    unfoldCorecursionE :: Elim' Value -> Blocked (Elim' Value)
     unfoldCorecursionE (Proj o p)           = notBlocked $ Proj o $ originalProjection p
     unfoldCorecursionE (Apply (Arg info v)) = fmap (Apply . Arg info) $
       unfoldCorecursion 0 v
 
-    unfoldCorecursion :: Int -> Term -> Blocked Term
-    unfoldCorecursion steps (Def f es) = unfoldDefinitionE steps True unfoldCorecursion (Def f []) f es
+    unfoldCorecursion :: Int -> Value -> Blocked Value
+    unfoldCorecursion steps (VDef f es) = unfoldDefinitionE steps True unfoldCorecursion (VDef f []) f es
     unfoldCorecursion steps v          = reduceB' steps v
 
-    -- | If the first argument is 'True', then a single delayed clause may
-    -- be unfolded.
-    unfoldDefinition ::
-      Int -> Bool -> (Int -> Term -> Blocked Term) ->
-      Term -> QName -> Args -> Blocked Term
-    unfoldDefinition steps unfoldDelayed keepGoing v f args =
-      unfoldDefinitionE steps unfoldDelayed keepGoing v f (map Apply args)
-
     unfoldDefinitionE ::
-      Int -> Bool -> (Int -> Term -> Blocked Term) ->
-      Term -> QName -> Elims -> Blocked Term
+      Int -> Bool -> (Int -> Value -> Blocked Value) ->
+      Value -> QName -> [Elim' Value] -> Blocked Value
     unfoldDefinitionE steps unfoldDelayed keepGoing v f es =
       case unfoldDefinitionStep steps unfoldDelayed (constInfo f) v f es of
         NoReduction v    -> v
         YesReduction _ v -> (keepGoing $! steps + 1) v
 
-    unfoldDefinitionStep :: Int -> Bool -> CompactDef -> Term -> QName -> Elims -> Reduced (Blocked Term) Term
+    reducedToValue (YesReduction r v) = YesReduction r (termToValue v)
+    reducedToValue (NoReduction b)    = NoReduction (fmap termToValue b)
+
+    rewriteValue b v0 rewr es =
+      reducedToValue $ runReduce $ rewrite b (valueToTerm v0) rewr $ elimsToTerm es
+
+    unfoldDefinitionStep :: Int -> Bool -> CompactDef -> Value -> QName -> [Elim' Value] -> Reduced (Blocked Value) Value
     unfoldDefinitionStep steps unfoldDelayed CompactDef{cdefDelayed = delayed, cdefNonterminating = nonterm, cdefDef = def, cdefRewriteRules = rewr} v0 f es =
-      let v = v0 `applyE` es
+      let v = v0 `applyV` es
           -- Non-terminating functions
           -- (i.e., those that failed the termination check)
           -- and delayed definitions
@@ -360,44 +434,39 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                (not allowNonTerminating && nonterm)
             || (not unfoldDelayed       && delayed)
       in case def of
-        CCon{cconSrcCon = c} ->
-          if hasRewriting then
-            runReduce $ rewrite (notBlocked ()) (Con c ConOSystem []) rewr es
-          else
-            NoReduction $ notBlocked $ Con c ConOSystem [] `applyE` es
-        CFun{cfunCompiled = cc} ->
-          reduceNormalE steps v0 f (map notReduced es) dontUnfold cc
+        CCon{cconSrcCon = c}
+          | hasRewriting -> rewriteValue (notBlocked ()) (VCon c ConOSystem []) rewr es
+          | otherwise    -> NoReduction $ notBlocked $ VCon c ConOSystem [] `applyV` es
+        CFun{cfunCompiled = cc} -> reduceNormalE steps v0 f (map notReduced es) dontUnfold cc
         CForce -> reduceForce unfoldDelayed v0 f es
-        CTyCon -> if hasRewriting then
-                    runReduce $ rewrite (notBlocked ()) v0 rewr es
-                  else
-                    NoReduction $ notBlocked v
-        COther -> runReduce $ R.unfoldDefinitionStep unfoldDelayed v0 f es
+        CTyCon | hasRewriting -> rewriteValue (notBlocked ()) v0 rewr es
+               | otherwise    -> NoReduction $ notBlocked v
+        COther -> reducedToValue $ runReduce $ R.unfoldDefinitionStep unfoldDelayed (valueToTerm v0) f $ elimsToTerm es
       where
         yesReduction = YesReduction NoSimplification
 
-        reduceForce :: Bool -> Term -> QName -> Elims -> Reduced (Blocked Term) Term
+        reduceForce :: Bool -> Value -> QName -> [Elim' Value] -> Reduced (Blocked Value) Value
         reduceForce unfoldDelayed v0 pf (Apply a : Apply b : Apply s : Apply t : Apply u : Apply f : es) =
           case reduceB' 0 (unArg u) of
             ub@Blocked{}        -> noGo ub
             ub@(NotBlocked _ u)
-              | isWHNF u  -> yesReduction $ unArg f `applyE` (Apply (defaultArg u) : es)
+              | isWHNF u  -> yesReduction $ unArg f `applyV` (Apply (defaultArg u) : es)
               | otherwise -> noGo ub
           where
-            noGo ub = NoReduction $ ub <&> \ u -> Def pf (Apply a : Apply b : Apply s : Apply t : Apply (defaultArg u) : Apply f : es)
+            noGo ub = NoReduction $ ub <&> \ u -> VDef pf (Apply a : Apply b : Apply s : Apply t : Apply (defaultArg u) : Apply f : es)
 
-            isWHNF u = case u of
-              Lit{}      -> True
-              Con{}      -> True
-              Lam{}      -> True
-              Pi{}       -> True
-              Sort{}     -> True
-              Level{}    -> True
-              DontCare{} -> True
-              MetaV{}    -> False
-              Var{}      -> False
-              Def q _    -> isTyCon q
-              Shared{}   -> __IMPOSSIBLE__
+            isWHNF u = case valueToTerm u of
+                Lit{}      -> True
+                Con{}      -> True
+                Lam{}      -> True
+                Pi{}       -> True
+                Sort{}     -> True
+                Level{}    -> True
+                DontCare{} -> True
+                MetaV{}    -> False
+                Var{}      -> False
+                Def q _    -> isTyCon q
+                Shared{}   -> __IMPOSSIBLE__
 
             isTyCon q =
               case cdefDef $ constInfo q of
@@ -405,28 +474,21 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                 _      -> False
 
         -- TODO: partially applied to u
-        reduceForce unfoldDelayed v0 pf es = runReduce $ R.unfoldDefinitionStep unfoldDelayed v0 f es
+        reduceForce unfoldDelayed v0 pf es = reducedToValue $ runReduce $ R.unfoldDefinitionStep unfoldDelayed (valueToTerm v0) f (elimsToTerm es)
 
-        reduceNormalE :: Int -> Term -> QName -> [MaybeReduced Elim] -> Bool -> FastCompiledClauses -> Reduced (Blocked Term) Term
+        reduceNormalE :: Int -> Value -> QName -> [MaybeReduced (Elim' Value)] -> Bool -> FastCompiledClauses -> Reduced (Blocked Value) Value
         reduceNormalE steps v0 f es dontUnfold cc
           | dontUnfold = defaultResult  -- non-terminating or delayed
-          | otherwise  = debugReduce $
-              case match' steps f [(cc, es, id)] of
-                YesReduction s u -> YesReduction s u
-                NoReduction es'
-                  | hasRewriting -> runReduce $ rewrite (void es') v0 rewr $ ignoreBlocking es'
-                  | otherwise    -> NoReduction $ applyE v0 <$> es'
-          where
-          defaultResult
-            | hasRewriting = runReduce $ rewrite (NotBlocked ReallyNotBlocked ()) v0 rewr $ map ignoreReduced es
-            | otherwise    = NoReduction $ NotBlocked ReallyNotBlocked $ v0 `applyE` map ignoreReduced es
-          debugReduce ev = ev -- trace msg ev
-            where
-            msg = case ev of
-              NoReduction v -> "fastreduce: no reduction on " ++ show v
-              YesReduction _simpl v -> "fastreduce: reduction on " ++ show v
+          | otherwise  =
+            case match' steps f [(cc, es, id)] of
+              YesReduction s u -> YesReduction s u
+              NoReduction es' | hasRewriting -> rewriteValue (void es') v0 rewr (ignoreBlocking es')
+                              | otherwise    -> NoReduction $ applyV v0 <$> es'
+          where defaultResult | hasRewriting = rewriteValue (NotBlocked ReallyNotBlocked ()) v0 rewr (map ignoreReduced es)
+                              | otherwise    = NoReduction $ NotBlocked ReallyNotBlocked vfull
+                vfull = v0 `applyV` map ignoreReduced es
 
-        match' :: Int -> QName -> FastStack -> Reduced (Blocked Elims) Term
+        match' :: Int -> QName -> FastStack -> Reduced (Blocked [Elim' Value]) Value
         match' steps f ((c, es, patch) : stack) =
           let no blocking es = NoReduction $ blocking $ patch $ map ignoreReduced es
               yes t          = yesReduction t
@@ -444,12 +506,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
               | m < n     -> yes $ doSubst es $ foldr lam t (drop m xs)
               -- otherwise, just apply instantiation to body
               -- apply the result to any extra arguments
-              | otherwise -> yes $ doSubst es0 t `applyE` map ignoreReduced es1
+              | otherwise -> yes $ doSubst es0 t `applyV` map ignoreReduced es1
               where
                 n = length xs
                 m = length es
                 useStrictSubst = rem steps strictEveryNth == 0
-                doSubst es t = strictSubst useStrictSubst (reverse $ map (unArg . argFromElim . ignoreReduced) es) t
+                doSubst es t = closure sub t
+                  where sub = parallelS (reverse $ map (valueToTerm . unArg . argFromElim . ignoreReduced) es)
+                -- doSubst es t = strictSubst useStrictSubst (reverse $ map (unArg . argFromElim . ignoreReduced) es) t
                 (es0, es1) = splitAt n es
                 lam x t    = Lam (argInfo x) (Abs (unArg x) t)
 
@@ -503,7 +567,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                           Nothing -> stack
                           Just cc -> (cc, es0 ++ [v] ++ es1, patchCon (fromJust suc) ConOSystem 1)
                                      : stack
-                        where v = MaybeRed (Reduced $ notBlocked ()) $ Apply $ defaultArg $ Lit $ LitNat noRange n
+                        where v = MaybeRed (Reduced $ notBlocked ()) $ Apply $ defaultArg $ VLit $ LitNat noRange n
 
                       -- If our argument is @Proj p@, we push @projFrame p@ onto the stack.
                       projFrame p stack =
@@ -516,7 +580,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                         where (es0, es1) = splitAt n es
                       -- In case we matched constructor @c@ with @m@ arguments,
                       -- contract these @m@ arguments @vs@ to @Con c ci vs@.
-                      patchCon c ci m es = patch (es0 ++ [Con c ci vs <$ e] ++ es2)
+                      patchCon c ci m es = patch (es0 ++ [VCon c ci vs <$ e] ++ es2)
                         where (es0, rest) = splitAt n es
                               (es1, es2)  = splitAt m rest
                               vs          = es1
@@ -526,23 +590,23 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                     NotBlocked blk elim ->
                       case elim of
                         Apply (Arg info v) ->
-                          case v of
-                            MetaV x _ -> no (Blocked x) es'
+                          case pushSubst v of
+                            VClosure _ (MetaV x _) _ -> no (Blocked x) es'
 
                             -- In case of a natural number literal, try also its constructor form
-                            Lit l@(LitNat r n) ->
+                            VLit l@(LitNat r n) ->
                               let cFrame stack
                                     | n > 0                  = sucFrame (n - 1) stack
                                     | n == 0, Just z <- zero = conFrame z ConOSystem [] stack
                                     | otherwise              = stack
                               in match' steps f $ litFrame l $ cFrame $ catchAllFrame stack
 
-                            Lit l    -> match' steps f $ litFrame l    $ catchAllFrame stack
-                            Con c ci vs -> match' steps f $ conFrame c ci vs $ catchAllFrame $ stack
+                            VLit l    -> match' steps f $ litFrame l    $ catchAllFrame stack
+                            VCon c ci vs -> match' steps f $ conFrame c ci vs $ catchAllFrame $ stack
 
                             -- Otherwise, we are stuck.  If we were stuck before,
                             -- we keep the old reason, otherwise we give reason StuckOn here.
-                            _ -> no (NotBlocked $ stuckOn elim blk) es'
+                            _ -> no (NotBlocked $ stuckOn (fmap valueToTerm elim) blk) es'
 
                         -- In case of a projection, push the projFrame
                         Proj _ p -> match' steps f $ projFrame p stack
