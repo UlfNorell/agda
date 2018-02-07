@@ -73,6 +73,8 @@ import Data.Traversable (traverse)
 
 import System.IO.Unsafe
 import Data.IORef
+import qualified Data.Vector as Vec
+import Data.Vector (Vector)
 
 import Debug.Trace (trace)
 
@@ -275,19 +277,33 @@ fastReduce allowNonTerminating v = do
 unKleisli :: (a -> ReduceM b) -> ReduceM (a -> b)
 unKleisli f = ReduceM $ \ env x -> unReduceM (f x) env
 
+data VSub = VSub (Vector Value) Substitution
+
+vSubToSub :: VSub -> Substitution
+vSubToSub (VSub _ sub) = sub
+
+makeVSub :: [MaybeReduced (Elim' Value)] -> VSub
+makeVSub es = VSub (Vec.fromList vs) sub
+  where
+    vs  = reverse $ map (unArg . argFromElim . ignoreReduced) es
+    sub = parallelS $ map valueToTerm vs
+
+lookupVSub :: VSub -> Int -> Value
+lookupVSub (VSub vs _) i = vs Vec.! i
+
 -- Not quite value..
 data Value = VCon ConHead ConInfo [Elim' Value]
            | VVar {-# UNPACK #-} !Int [Elim' Value]
            | VDef QName [Elim' Value]
            | VLit Literal
-           | VClosure Substitution Term [Elim' Value] -- ?
+           | VClosure VSub Term [Elim' Value] -- ?
 
 valueToTerm :: Value -> Term
 valueToTerm (VCon c i es)    = Con c i $ elimsToTerm es
 valueToTerm (VDef f es)      = Def f   $ elimsToTerm es
 valueToTerm (VVar x es)      = Var x   $ elimsToTerm es
 valueToTerm (VLit l)         = Lit l
-valueToTerm (VClosure sub v es) = applySubst sub v `applyE` elimsToTerm es
+valueToTerm (VClosure sub v es) = applySubst (vSubToSub sub) v `applyE` elimsToTerm es
 
 elimsToTerm :: [Elim' Value] -> Elims
 elimsToTerm = (map . fmap) valueToTerm
@@ -297,9 +313,9 @@ termToValue (Con c h es) = VCon c h $ (map . fmap) termToValue es
 termToValue (Def f es)   = VDef f $ (map . fmap) termToValue es
 termToValue (Var i es)   = VVar i $ (map . fmap) termToValue es
 termToValue (Lit l)      = VLit l
-termToValue v            = VClosure IdS v []
+termToValue v            = VClosure (makeVSub []) v []  -- !! Not correct for open terms !!
 
-closure :: Substitution -> Term -> Value
+closure :: VSub -> Term -> Value
 closure sub t = VClosure sub t []
 
 pushSubst :: Value -> Value
@@ -308,7 +324,7 @@ pushSubst (VClosure sub t es) = (`applyV` es) $
     Con c h es -> VCon c h $ closE es
     Def f es   -> VDef f   $ closE es
     Lit l      -> VLit l
-    Var i es   -> termToValue (lookupS sub i) `applyV` closE es
+    Var i es   -> lookupVSub sub i `applyV` closE es
     _          -> closure sub t
   where closE = (map . fmap) (closure sub)
 pushSubst v = v
@@ -346,7 +362,7 @@ defAppV f es0 es = VDef f $ es0 ++ es
 
 argToDontCareV :: Arg Value -> Value
 argToDontCareV (Arg ai v)
-  | Irrelevant <- getRelevance ai = closure IdS (dontCare $ valueToTerm v)
+  | Irrelevant <- getRelevance ai = closure (makeVSub []) (dontCare $ valueToTerm v)
   | otherwise                     = v
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
@@ -425,12 +441,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = fmap valueTo
 
     unfoldDefinitionStep :: Int -> Bool -> CompactDef -> Value -> QName -> [Elim' Value] -> Reduced (Blocked Value) Value
     unfoldDefinitionStep steps unfoldDelayed CompactDef{cdefDelayed = delayed, cdefNonterminating = nonterm, cdefDef = def, cdefRewriteRules = rewr} v0 f es =
-      let v = v0 `applyV` es
           -- Non-terminating functions
           -- (i.e., those that failed the termination check)
           -- and delayed definitions
           -- are not unfolded unless explicitely permitted.
-          dontUnfold =
+      let dontUnfold =
                (not allowNonTerminating && nonterm)
             || (not unfoldDelayed       && delayed)
       in case def of
@@ -440,7 +455,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = fmap valueTo
         CFun{cfunCompiled = cc} -> reduceNormalE steps v0 f (map notReduced es) dontUnfold cc
         CForce -> reduceForce unfoldDelayed v0 f es
         CTyCon | hasRewriting -> rewriteValue (notBlocked ()) v0 rewr es
-               | otherwise    -> NoReduction $ notBlocked v
+               | otherwise    -> NoReduction $ notBlocked (v0 `applyV` es)
         COther -> reducedToValue $ runReduce $ R.unfoldDefinitionStep unfoldDelayed (valueToTerm v0) f $ elimsToTerm es
       where
         yesReduction = YesReduction NoSimplification
@@ -512,7 +527,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = fmap valueTo
                 m = length es
                 useStrictSubst = rem steps strictEveryNth == 0
                 doSubst es t = closure sub t
-                  where sub = parallelS (reverse $ map (valueToTerm . unArg . argFromElim . ignoreReduced) es)
+                  where sub = makeVSub es
                 -- doSubst es t = strictSubst useStrictSubst (reverse $ map (unArg . argFromElim . ignoreReduced) es) t
                 (es0, es1) = splitAt n es
                 lam x t    = Lam (argInfo x) (Abs (unArg x) t)
