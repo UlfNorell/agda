@@ -73,8 +73,6 @@ import Data.Traversable (traverse)
 
 import System.IO.Unsafe
 import Data.IORef
-import qualified Data.Vector as Vec
-import Data.Vector (Vector)
 
 import Debug.Trace (trace)
 
@@ -100,9 +98,12 @@ import Agda.Utils.Maybe
 import Agda.Utils.Memo
 import Agda.Utils.Function
 import Agda.Utils.Functor
+import Agda.Utils.Pretty (prettyShow)
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+import Debug.Trace
 
 -- Compact definitions ----------------------------------------------------
 
@@ -277,19 +278,19 @@ fastReduce allowNonTerminating v = do
 unKleisli :: (a -> ReduceM b) -> ReduceM (a -> b)
 unKleisli f = ReduceM $ \ env x -> unReduceM (f x) env
 
-data VSub = VSub (Vector Value) Substitution
+data VSub = VSub [Value] Substitution
 
 vSubToSub :: VSub -> Substitution
 vSubToSub (VSub _ sub) = sub
 
 makeVSub :: [MaybeReduced (Elim' Value)] -> VSub
-makeVSub es = VSub (Vec.fromList vs) sub
+makeVSub es = VSub vs sub
   where
     vs  = reverse $ map (unArg . argFromElim . ignoreReduced) es
     sub = parallelS $ map valueToTerm vs
 
 lookupVSub :: VSub -> Int -> Value
-lookupVSub (VSub vs _) i = vs Vec.! i
+lookupVSub (VSub vs _) i = vs !! i
 
 -- Not quite value..
 data Value = VCon ConHead ConInfo [Elim' Value]
@@ -297,6 +298,14 @@ data Value = VCon ConHead ConInfo [Elim' Value]
            | VDef QName [Elim' Value]
            | VLit Literal
            | VClosure VSub Term [Elim' Value] -- ?
+
+showValue :: Value -> String
+showValue v = case v of
+  VCon h _ _     -> "VCon " ++ show h
+  VDef f _       -> "VDef " ++ show f
+  VLit l         -> "VLit " ++ show l
+  VVar i _       -> "VVar " ++ show i
+  VClosure _ _ _ -> "VClosure{}"
 
 valueToTerm :: Value -> Term
 valueToTerm (VCon c i es)    = Con c i $ elimsToTerm es
@@ -324,7 +333,7 @@ pushSubst (VClosure sub t es) = (`applyV` es) $
     Con c h es -> VCon c h $ closE es
     Def f es   -> VDef f   $ closE es
     Lit l      -> VLit l
-    Var i es   -> lookupVSub sub i `applyV` closE es
+    Var i es   -> pushSubst $ lookupVSub sub i `applyV` closE es
     _          -> closure sub t
   where closE = (map . fmap) (closure sub)
 pushSubst v = v
@@ -396,7 +405,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = fmap valueTo
             b              -> b
         VLit{} -> notBlocked v
         VVar{} -> notBlocked v
-        _      -> fmap termToValue $ runReduce (slowReduceTerm $ valueToTerm v)
+        v      -> fmap termToValue $ runReduce (slowReduceTerm $ valueToTerm v)
       where
         reduceNat :: Value -> Value
         reduceNat v@(VCon c ci [])
