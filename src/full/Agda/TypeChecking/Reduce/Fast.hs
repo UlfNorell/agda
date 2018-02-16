@@ -460,21 +460,21 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
       case bv of
         Blocked{} -> runAM stuck
         NotBlocked _ cl@(Closure t env stack) -> case t of
-          Con c ci [] -> -- Matching constructor
-            case lookupCon (conName c) bs of
-              -- No matching case, check catch-all
-              Nothing ->
-                case fcatchAllBranch bs of
-                  Nothing -> runAM stuck  -- no catch-all, TODO: fall-through to parent catch-alls, or transform case tree?
-                  Just cc -> runAM (Match f cl0 cc (patch . patchWild) (stack0 ++ stack1), ctrl)
-              Just cc -> runAM (Match f cl0 cc (patch . patchCon) (stack0 ++ stack ++ stack1), ctrl)
-                where
-                  -- TODO: this is terrible
-                  n  = length stack0
-                  ar = length stack
-                  patchCon es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
-                    where (es0, rest) = splitAt n es
-                          (es1, es2)  = splitAt ar rest
+          Con c ci [] ->
+            (lookupCon (conName c) bs =>? \ cc ->
+                -- Matching constructor
+                runAM (Match f cl0 cc (patch . patchCon) (stack0 ++ stack ++ stack1), ctrl)) $
+            (fcatchAllBranch bs =>? \ cc ->
+                -- No matching case, check catch-all
+                runAM (Match f cl0 cc (patch . patchWild) (stack0 ++ stack1), ctrl)) $
+            runAM stuck   -- no catch-all, TODO: fall-through to parent catch-alls, or transform case tree?
+            where
+              -- TODO: this is terrible
+              n  = length stack0
+              ar = length stack
+              patchCon es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
+                where (es0, rest) = splitAt n es
+                      (es1, es2)  = splitAt ar rest
           Con{} -> __IMPOSSIBLE__ -- elims should have been shifted onto the stack
           Lit{} -> __IMPOSSIBLE__ -- TODO
           _ -> runAM stuck -- TODO
@@ -522,6 +522,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
       where done why = (Value $ NotBlocked why $ cl0 `clApply` patch stack, ctrl)
 
     evalClosure = ((Eval .) .) . Closure
+
+    (=>?) :: Maybe a -> (a -> b) -> b -> b
+    (m =>? f) z = maybe z f m
 
     fallback :: AM -> AM
     fallback = mkValue . runReduce . slowReduceTerm . ignoreBlocking . decode
