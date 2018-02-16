@@ -181,10 +181,13 @@ data FastCompiledClauses
 
 instance Pretty a => Pretty (FastCase a) where
   prettyPrec p (FBranches _cop cs suc ls m) =
-    mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prC m)
+    mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prSuc suc ++ prC m)
     where
       prC Nothing = []
-      prC (Just x) = [text "_ ->" <+> pretty x]
+      prC (Just x) = [text "_ ->" <?> pretty x]
+
+      prSuc Nothing  = []
+      prSuc (Just x) = [text "suc ->" <?> pretty x]
 
 instance Pretty NameId where
   pretty = text . show
@@ -214,10 +217,13 @@ fastCase :: Maybe ConHead -> Maybe ConHead -> Case CompiledClauses -> FastCase F
 fastCase z s (Branches proj con _ lit wild _) =
   FBranches
     { fprojPatterns   = proj
-    , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses z s . content) con
+    , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses z s . content) (stripSuc con)
     , fsucBranch      = fmap (fastCompiledClauses z s . content) $ flip Map.lookup con . conName =<< s
     , flitBranches    = fmap (fastCompiledClauses z s) lit
     , fcatchAllBranch = fmap (fastCompiledClauses z s) wild }
+  where
+    stripSuc | Just c <- s = Map.delete (conName c)
+             | otherwise   = id
 
 {-# INLINE lookupCon #-}
 lookupCon :: QName -> FastCase c -> Maybe c
