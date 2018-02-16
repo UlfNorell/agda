@@ -424,32 +424,12 @@ decodeClosure :: Closure -> Term
 decodeClosure (Closure t [] st) = t `applyE` (map . fmap) decodeClosure st
 decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst (parallelS $ map decodeClosure e) t) [] st)
 
-decode :: Maybe ConHead -> AM -> Blocked Term
-decode _ (Value c, []) = topMetaIsNotBlocked $ fmap decodeClosure c
-decode s (Value arg, NatSuc n : ctrl) = decode s (Value (plus n <$> arg), ctrl)
-  where
-    plus 0 cl = cl
-    plus n cl = plus (n - 1) $ Closure (Con (fromJust s) ConOSystem []) [] [Apply $ defaultArg cl]
-decode s (Value bv, DoForce pf stack0 stack1 : ctrl) =
-  decode s (Value (stuck <$ bv), ctrl)
-  where
-    arg   = ignoreBlocking bv
-    stuck = Closure (Def pf []) [] (stack0 ++ [Apply $ defaultArg arg] ++ stack1)
-decode s (Value arg, DoCase _ i cl _ patch stack0 stack1 : ctrl) =
-  -- TODO: check this
-  decode s (Value (clApply cl stack <$ arg), ctrl)
-  where stack = patch $ stack0 ++ [Apply . Arg i $ ignoreBlocking arg] ++ stack1
-decode s (Eval c, ctrl) = decode s (Value $ notBlocked c, ctrl)   -- only for fallback to slow reduce(?)
-decode _ (Match{}, ctrl) = __IMPOSSIBLE__
-decode _ (Mismatch{}, ctrl) = __IMPOSSIBLE__
-decode s (f@Value{}, FallThrough{} : ctrl) = decode s (f, ctrl)   -- TODO: Not right..?
-
 elimsToStack :: Env -> Elims -> Stack
 elimsToStack env = (map . fmap) (mkClosure env)
   where mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode suc . runAM . compile . traceDoc "tc.reduce.fast" 80 (text "-- fast reduce --")
+reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . compile . traceDoc "tc.reduce.fast" 80 (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     -- Force substitutions every nth step to avoid memory leaks. Doing it in
@@ -488,8 +468,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode suc .
     -- runAM s = runAM' s
     runAM s = traceDoc "tc.reduce.fast" 80 (pretty s) (runAM' s)
 
-    runAM' :: AM -> AM
-    runAM' s@(Value{}, []) = s
+    runAM' :: AM -> Blocked Term
+    runAM' (Value b, []) = decodeClosure <$> b
     runAM' s@(Eval cl@(Closure t env stack), ctrl) =
       case t of
 
@@ -692,9 +672,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode suc .
     (=>?) :: Maybe a -> (a -> b) -> b -> b
     (m =>? f) z = maybe z f m
 
-    fallback :: AM -> AM
-    fallback = mkValue . runReduce . slowReduceTerm . ignoreBlocking . decode suc
-      where mkValue b = (Value (b <&> \ t -> Closure t [] []), [])
+    fallback :: AM -> Blocked Term
+    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure c, ctrl)
+      where mkValue b = Value (b <&> \ t -> Closure t [] [])
+    fallback _ = __IMPOSSIBLE__
 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
