@@ -93,6 +93,7 @@ import Agda.TypeChecking.CompiledClause.Match ()
 
 import Agda.Interaction.Options
 
+import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Memo
@@ -370,28 +371,36 @@ clApply :: Closure -> Stack -> Closure
 clApply (Closure t env es) es' = Closure t env (es ++ es')
 
 type ControlStack = [ControlFrame]
+
 data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) (Stack -> Stack) Stack Stack
+                  | NatSuc Integer
+                  | FallThrough FastCompiledClauses (Stack -> Stack) Stack
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses (Stack -> Stack) Stack
            | Value (Blocked Closure)
+           | Mismatch QName Closure (Stack -> Stack) Stack
 
 type AM = (Focus, ControlStack)
 
 instance Pretty Closure where
   prettyPrec p (Closure t env stack) =
-    mparens (p > 9) $ fsep [ text "Closure"
+    mparens (p > 9) $ fsep [ text "C"
                            , nest 2 $ prettyPrec 10 t
-                           , nest 2 $ prettyList env
+                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
                            , nest 2 $ prettyList stack ]
+      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
 
 instance Pretty Focus where
-  prettyPrec p (Eval cl)  = mparens (p > 9) (text "Eval" <?> prettyPrec 10 cl)
-  prettyPrec p (Value cl) = mparens (p > 9) (text "Value" <?> prettyPrec 10 (ignoreBlocking cl))
-  prettyPrec p (Match _ cl _ _ st) = mparens (p > 9) (text "Match" <?> prettyPrec 10 (clApply cl st))
+  prettyPrec p (Eval cl)  = mparens (p > 9) (text "E" <?> prettyPrec 10 cl)
+  prettyPrec p (Value cl) = mparens (p > 9) (text "V" <?> prettyPrec 10 (ignoreBlocking cl))
+  prettyPrec p (Match _ cl cc _ st) = mparens (p > 9) $ (text "M" <?> prettyPrec 10 (clApply cl st)) <?> prettyPrec 10 cc
+  prettyPrec p (Mismatch _ cl _ st) = mparens (p > 9) $ text "⊥" <?> prettyPrec 10 (clApply cl st)
 
 instance Pretty ControlFrame where
-  pretty (DoCase{}) = text "DoCase{}"
+  prettyPrec _ (DoCase{})       = text "DoCase{}"
+  prettyPrec _ (NatSuc n)       = text ("+" ++ show n)
+  prettyPrec p (FallThrough cc _ stack) = mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
 
 compile :: Term -> AM
 compile t = (Eval (Closure t [] []), [])
@@ -402,24 +411,33 @@ decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst (parallelS 
 
 decode :: AM -> Blocked Term
 decode (Value c, []) = topMetaIsNotBlocked $ fmap decodeClosure c
+decode (Value arg, NatSuc n : ctrl) = __IMPOSSIBLE__    -- TODO: not really, but I don't have access to `suc` here, so ugh
 decode (Value arg, DoCase _ i cl _ patch stack0 stack1 : ctrl) =
   -- TODO: check this
   decode (Value (clApply cl stack <$ arg), ctrl)
   where stack = patch $ stack0 ++ [Apply . Arg i $ ignoreBlocking arg] ++ stack1
 decode (Eval c, ctrl) = decode (Value $ notBlocked c, ctrl)   -- only for fallback to slow reduce(?)
 decode (Match{}, ctrl) = __IMPOSSIBLE__
+decode (Mismatch{}, ctrl) = __IMPOSSIBLE__
+decode (Value{}, FallThrough{} : _) = __IMPOSSIBLE__
 
 elimsToStack :: Env -> Elims -> Stack
 elimsToStack env = (map . fmap) (mkClosure env)
   where mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . runAM . compile
+reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . runAM . compile . traceDoc "tc.reduce.fast" 80 (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     -- Force substitutions every nth step to avoid memory leaks. Doing it in
     -- every is too expensive (issue 2215).
     -- strictEveryNth = 1000
+
+    metaStore = redSt env ^. stMetaStore
+
+    sucCtrl :: ControlStack -> ControlStack
+    sucCtrl (NatSuc n : ctrl) = (NatSuc $! n + 1) : ctrl
+    sucCtrl ctrl              = NatSuc 1 : ctrl
 
     runReduce m = unReduceM m env
     conNameId = nameId . qnameName . conName
@@ -433,7 +451,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         Nothing -> const False
         Just s  -> (conNameId s ==) . conNameId
 
-    runAM s = runAM' s -- trace (prettyShow s) (runAM' s)
+    hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
+
+    traceDoc tag lvl doc
+      | hasVerb tag lvl = trace (show doc)
+      | otherwise       = id
+
+    -- runAM s = runAM' s
+    runAM s = traceDoc "tc.reduce.fast" 80 (pretty s) (runAM' s)
 
     runAM' :: AM -> AM
     runAM' s@(Value{}, []) = s
@@ -446,10 +471,18 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
             CTyCon                    -> runAM done
             CCon{}                    -> __IMPOSSIBLE__
             CForce                    -> __IMPOSSIBLE__ -- TODO
-            COther                    -> __IMPOSSIBLE__ -- TODO
+            COther                    -> runAM done -- TODO
+
+        -- Nat zero
+        Con c i [] | Just c == zero ->
+          runAM (Value (notBlocked $ Closure (Lit (LitNat noRange 0)) [] stack), ctrl)
+
+        -- Nat suc
+        Con c i [] | Just c == suc, Apply v : stack' <- stack ->
+          runAM (Eval (unArg v), sucCtrl ctrl)
+
         Con c i [] -> runAM (Value (notBlocked $ Closure (Con c' i []) env stack), ctrl)
           where CCon{cconSrcCon = c'} = cdefDef (constInfo (conName c))
-          -- TODO: numbers
           -- TODO: projection
 
         Var x []   ->
@@ -457,7 +490,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
             Nothing -> runAM done
             Just cl -> runAM (Eval (clApply cl stack), ctrl)
 
-        MetaV m [] -> runAM (Value (blocked m cl), ctrl)
+        MetaV m [] ->
+          case mvInstantiation <$> Map.lookup m metaStore of
+            Nothing -> __IMPOSSIBLE__
+            Just inst  -> case inst of
+              InstV xs t -> runAM (evalClosure t env stack', ctrl)
+                where (zs, env, stack') = buildEnv xs stack
+              _          -> runAM (Value (blocked m cl), ctrl)
 
         Lit{} -> runAM done
         Pi{}  -> runAM done
@@ -475,35 +514,92 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         _ -> fallback s
       where done = (Value (notBlocked cl), ctrl)
 
+    runAM' s@(Value bv, NatSuc m : ctrl) =
+      case bv of
+        NotBlocked _ (Closure (Lit (LitNat r n)) _ []) ->
+          runAM (Value $ notBlocked $ Closure (Lit $ LitNat r $! m + n) [] [], ctrl)
+        _ -> runAM stuck
+      where
+        stuck = (Value (notBlocked $ plus m $ ignoreBlocking bv), ctrl)
+        -- TODO: optimised representation of sucⁿ t
+        plus 0 cl = cl
+        plus n cl = plus (n - 1) $ Closure (Con (fromJust suc) ConOSystem []) [] [Apply $ defaultArg cl]
+
+    -- Fall-through handling
+    runAM' s@(Mismatch f cl0 _ _, FallThrough cc patch stack : ctrl) =  -- TODO: Ignoring stack of mismatch...?
+      runAM (Match f cl0 cc patch stack, ctrl)
+    runAM' s@(Mismatch f cl0 patch stack, ctrl) =   -- TODO: fail unless f `elem` partialDefs
+      runAM (Value (NotBlocked MissingClauses $ cl0 `clApply` patch stack), ctrl)
+    runAM' (f@Value{}, FallThrough{} : ctrl) = runAM (f, ctrl)  -- We didn't fall through
+
     -- Pattern matching against a value
     runAM' s@(Value bv, DoCase f i cl0 bs patch stack0 stack1 : ctrl) =
       case bv of
         Blocked{} -> runAM stuck
         NotBlocked _ cl@(Closure t env stack) -> case t of
-          Con c ci [] ->
-            (lookupCon (conName c) bs =>? \ cc ->
-                -- Matching constructor
-                runAM (Match f cl0 cc (patch . patchCon) (stack0 ++ stack ++ stack1), ctrl)) $
-            (fcatchAllBranch bs =>? \ cc ->
-                -- No matching case, check catch-all
-                runAM (Match f cl0 cc (patch . patchWild) (stack0 ++ stack1), ctrl)) $
-            runAM stuck   -- no catch-all, TODO: fall-through to parent catch-alls, or transform case tree?
-            where
-              -- TODO: this is terrible
-              n  = length stack0
-              ar = length stack
-              patchCon es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
-                where (es0, rest) = splitAt n es
-                      (es1, es2)  = splitAt ar rest
+          Con c ci [] -> conFrame c ci (length stack) $ sucFrame c ci $ catchallFrame $ runAM nomatch
+
           Con{} -> __IMPOSSIBLE__ -- elims should have been shifted onto the stack
-          Lit{} -> __IMPOSSIBLE__ -- TODO
+
+          Lit l@(LitNat _ n) ->
+            litFrame l $ litsucFrame n $ zeroFrame n $ catchallFrame $ runAM nomatch
+
+          Lit l -> litFrame l $ catchallFrame $ runAM nomatch
+
           _ -> runAM stuck -- TODO
+          where
+            -- Matching constructor
+            conFrame c ci ar = lookupCon (conName c) bs =>? \ cc ->
+              runAM (Match f cl0 cc (patch . patchCon c ci ar) (stack0 ++ stack ++ stack1), ctrlFallThrough)
+
+            -- Catch-all
+            catchallFrame = fcatchAllBranch bs =>? \ cc ->
+              runAM (Match f cl0 cc patch (stack0 ++ [Apply $ Arg i cl] ++ stack1), ctrl)
+
+            -- Matching literal: TODO might fall through to constructor cases!
+            litFrame l = Map.lookup l (flitBranches bs) =>? \ cc ->
+              runAM (Match f cl0 cc (patch . patchWild) (stack0 ++ stack1), ctrlFallThrough)
+
+            -- Matching a constructor against 'suc'
+            sucFrame c ci | Just c == suc =
+              fsucBranch bs =>? \ cc ->
+                runAM (Match f cl0 cc (patch . patchCon c ci 1)
+                                      (stack0 ++ stack ++ stack1), ctrlFallThrough)
+            sucFrame _ _ = id
+
+            -- Matching a literal against 'suc'
+            litsucFrame n | n <= 0 = id
+            litsucFrame n = fsucBranch bs =>? \ cc ->
+              runAM (Match f cl0 cc (patch . patchCon (fromJust suc) ConOSystem 1)
+                                    (stack0 ++ [n'] ++ stack1), ctrlFallThrough)
+              where n' = Apply $ defaultArg $ Closure (Lit (LitNat noRange (n - 1))) [] []
+
+            -- Matching 'zero'
+            zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
+            zeroFrame _ = id
+
+            -- TODO: this is terrible
+            n = length stack0
+            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
+              where (es0, rest) = splitAt n es
+                    (es1, es2)  = splitAt ar rest
       where
         cl = ignoreBlocking bv
         patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
           where (es0, es1) = splitAt (length stack0) es
+
         stuck = (Value (clApply cl0 stack' <$ bv), ctrl)
-          where stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
+          where stack' = patch $ stack0 ++ [Apply $ Arg i cl] ++ stack1
+
+        -- Push catch-all frame if there is a catch-all
+        ctrlFallThrough =
+          case fcatchAllBranch bs of
+            Nothing -> ctrl
+            Just cc -> FallThrough cc patch stack' : ctrl
+
+        stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
+
+        nomatch = (Mismatch f cl0 patch stack', ctrl)
 
     runAM' s@(Match f cl0 cc patch stack, ctrl) =
       case cc of
@@ -511,15 +607,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         FFail         -> runAM (Value $ NotBlocked AbsurdMatch $ cl0 `clApply` patch stack, ctrl)
         FDone xs body -> runAM (Eval (Closure (lams zs body) env stack'), ctrl)
           where
-            -- Build the environment for the body from the top of the stack. Also returns
-            -- the remaining stack and names for missing arguments in case of
-            -- partial application.
-            buildEnv xs [] env = (xs, env, [])
-            buildEnv [] st env = ([], env, st)
-            buildEnv (x : xs) (Apply c : st) env = buildEnv xs st (unArg c : env)
-            buildEnv (_ : _) (_ : _) _ = __IMPOSSIBLE__
-
-            (zs, env, stack') = buildEnv xs stack []
+            (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
             lam x t = Lam (argInfo x) (Abs (unArg x) t)
@@ -549,6 +637,17 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
     fallback :: AM -> AM
     fallback = mkValue . runReduce . slowReduceTerm . ignoreBlocking . decode
       where mkValue b = (Value (b <&> \ t -> Closure t [] []), [])
+
+    -- Build the environment for a body with some given free variables from the
+    -- top of the stack. Also returns the remaining stack and names for missing
+    -- arguments in case of partial application.
+    buildEnv :: [Arg String] -> Stack -> ([Arg String], Env, Stack)
+    buildEnv xs stack = go xs stack []
+      where
+        go xs       []             env = (xs, env, [])
+        go []       st             env = ([], env, st)
+        go (x : xs) (Apply c : st) env = go xs st (unArg c : env)
+        go (_ : _)  (_ : _)        _   = __IMPOSSIBLE__
 
     -- reduceB' :: Int -> Value -> Blocked Value
     -- reduceB' steps v =
