@@ -435,7 +435,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         Var x []   ->
           case lookupEnv x env of
             Nothing -> runAM done
-            Just cl -> runAM (Eval cl, ctrl)
+            Just cl -> runAM (Eval (clApply cl stack), ctrl)
 
         MetaV m [] -> runAM (Value (blocked m cl), ctrl)
 
