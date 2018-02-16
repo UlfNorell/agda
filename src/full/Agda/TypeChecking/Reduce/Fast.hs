@@ -123,6 +123,7 @@ data CompactDefn
   | CCon  { cconSrcCon    :: ConHead }
   | CForce  -- ^ primForce
   | CTyCon  -- ^ Datatype or record type. Need to know this for primForce.
+  | CAxiom  -- ^ Axiom or abstract defn
   | COther  -- ^ In this case we fall back to slow reduction
 
 compactDef :: Maybe ConHead -> Maybe ConHead -> Maybe QName -> Definition -> RewriteRules -> ReduceM CompactDef
@@ -134,9 +135,15 @@ compactDef z s pf def rewr = do
       Function{funCompiled = Just cc, funClauses = _:_, funProjection = proj} ->
         pure CFun{ cfunCompiled   = fastCompiledClauses z s cc
                  , cfunProjection = projOrig <$> proj }
+      Function{funClauses = []} -> pure CAxiom
+      Function{} -> __IMPOSSIBLE__
       Datatype{dataClause = Nothing} -> pure CTyCon
       Record{recClause = Nothing} -> pure CTyCon
-      _ -> pure COther
+      Datatype{} -> pure COther -- TODO
+      Record{} -> pure COther -- TODO
+      Axiom{} -> pure CAxiom
+      AbstractDefn{} -> pure CAxiom
+      Primitive{} -> pure COther
   return $
     CompactDef { cdefDelayed        = defDelayed def == Delayed
                , cdefNonterminating = defNonterminating def
@@ -368,8 +375,8 @@ data Closure = Closure Term Env Stack  -- Env applied to the Term (the stack con
 type Env = [Closure]
 
 lookupEnv :: Int -> Env -> Maybe Closure
-lookupEnv i e | length e < i = Nothing
-              | otherwise    = Just (e !! i)
+lookupEnv i e | i < length e = Just (e !! i)
+              | otherwise    = Nothing
 
 type Stack = [Elim' Closure]
 
@@ -379,6 +386,7 @@ clApply (Closure t env es) es' = Closure t env (es ++ es')
 type ControlStack = [ControlFrame]
 
 data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) (Stack -> Stack) Stack Stack
+                  | DoForce QName Stack Stack
                   | NatSuc Integer
                   | FallThrough FastCompiledClauses (Stack -> Stack) Stack
 
@@ -405,6 +413,7 @@ instance Pretty Focus where
 
 instance Pretty ControlFrame where
   prettyPrec _ (DoCase{})       = text "DoCase{}"
+  prettyPrec p (DoForce _ stack0 stack1)  = mparens (p > 9) $ text "DoForce" <?> prettyList (stack0 ++ stack1)
   prettyPrec _ (NatSuc n)       = text ("+" ++ show n)
   prettyPrec p (FallThrough cc _ stack) = mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
 
@@ -415,24 +424,32 @@ decodeClosure :: Closure -> Term
 decodeClosure (Closure t [] st) = t `applyE` (map . fmap) decodeClosure st
 decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst (parallelS $ map decodeClosure e) t) [] st)
 
-decode :: AM -> Blocked Term
-decode (Value c, []) = topMetaIsNotBlocked $ fmap decodeClosure c
-decode (Value arg, NatSuc n : ctrl) = __IMPOSSIBLE__    -- TODO: not really, but I don't have access to `suc` here, so ugh
-decode (Value arg, DoCase _ i cl _ patch stack0 stack1 : ctrl) =
+decode :: Maybe ConHead -> AM -> Blocked Term
+decode _ (Value c, []) = topMetaIsNotBlocked $ fmap decodeClosure c
+decode s (Value arg, NatSuc n : ctrl) = decode s (Value (plus n <$> arg), ctrl)
+  where
+    plus 0 cl = cl
+    plus n cl = plus (n - 1) $ Closure (Con (fromJust s) ConOSystem []) [] [Apply $ defaultArg cl]
+decode s (Value bv, DoForce pf stack0 stack1 : ctrl) =
+  decode s (Value (stuck <$ bv), ctrl)
+  where
+    arg   = ignoreBlocking bv
+    stuck = Closure (Def pf []) [] (stack0 ++ [Apply $ defaultArg arg] ++ stack1)
+decode s (Value arg, DoCase _ i cl _ patch stack0 stack1 : ctrl) =
   -- TODO: check this
-  decode (Value (clApply cl stack <$ arg), ctrl)
+  decode s (Value (clApply cl stack <$ arg), ctrl)
   where stack = patch $ stack0 ++ [Apply . Arg i $ ignoreBlocking arg] ++ stack1
-decode (Eval c, ctrl) = decode (Value $ notBlocked c, ctrl)   -- only for fallback to slow reduce(?)
-decode (Match{}, ctrl) = __IMPOSSIBLE__
-decode (Mismatch{}, ctrl) = __IMPOSSIBLE__
-decode (Value{}, FallThrough{} : _) = __IMPOSSIBLE__
+decode s (Eval c, ctrl) = decode s (Value $ notBlocked c, ctrl)   -- only for fallback to slow reduce(?)
+decode _ (Match{}, ctrl) = __IMPOSSIBLE__
+decode _ (Mismatch{}, ctrl) = __IMPOSSIBLE__
+decode s (f@Value{}, FallThrough{} : ctrl) = decode s (f, ctrl)   -- TODO: Not right..?
 
 elimsToStack :: Env -> Elims -> Stack
 elimsToStack env = (map . fmap) (mkClosure env)
   where mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . runAM . compile . traceDoc "tc.reduce.fast" 80 (text "-- fast reduce --")
+reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode suc . runAM . compile . traceDoc "tc.reduce.fast" 80 (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     -- Force substitutions every nth step to avoid memory leaks. Doing it in
@@ -457,6 +474,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         Nothing -> const False
         Just s  -> (conNameId s ==) . conNameId
 
+    isTyCon q =
+      case cdefDef $ constInfo q of
+        CTyCon -> True
+        _      -> False
+
     hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
 
     traceDoc tag lvl doc
@@ -474,10 +496,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         Def f [] ->
           case cdefDef (constInfo f) of
             CFun{ cfunCompiled = cc } -> runAM (Match f (Closure t [] []) cc id stack, ctrl)
+            CAxiom                    -> runAM done
             CTyCon                    -> runAM done
             CCon{}                    -> __IMPOSSIBLE__
-            CForce                    -> __IMPOSSIBLE__ -- TODO
-            COther                    -> runAM done -- TODO
+            COther                    -> fallback s
+            CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
+              runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
+            CForce -> runAM done
 
         -- Nat zero
         Con c i [] | isZero c ->
@@ -530,6 +555,30 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         -- TODO: optimised representation of sucⁿ t
         plus 0 cl = cl
         plus n cl = plus (n - 1) $ Closure (Con (fromJust suc) ConOSystem []) [] [Apply $ defaultArg cl]
+
+    -- primForce
+    runAM' (Value bv, DoForce pf stack0 stack1 : ctrl)
+      | isWHNF t =
+        case stack1 of
+          Apply k : stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) : stack')), ctrl)
+          _ : _            -> __IMPOSSIBLE__
+          []               -> __IMPOSSIBLE__    -- TODO: need to build \ k -> k arg
+      | otherwise = runAM (Value (stuck <$ bv), ctrl)
+      where
+        stuck = Closure (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
+        arg@(Closure t _ _) = ignoreBlocking bv
+        isWHNF u = case u of
+          Lit{}      -> True
+          Con{}      -> True
+          Lam{}      -> True
+          Pi{}       -> True
+          Sort{}     -> True
+          Level{}    -> True
+          DontCare{} -> True
+          MetaV{}    -> False
+          Var{}      -> False
+          Def q _    -> isTyCon q
+          Shared{}   -> __IMPOSSIBLE__
 
     -- Fall-through handling
     runAM' s@(Mismatch f cl0 _ _, FallThrough cc patch stack : ctrl) =  -- TODO: Ignoring stack of mismatch...?
@@ -644,7 +693,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
     (m =>? f) z = maybe z f m
 
     fallback :: AM -> AM
-    fallback = mkValue . runReduce . slowReduceTerm . ignoreBlocking . decode
+    fallback = mkValue . runReduce . slowReduceTerm . ignoreBlocking . decode suc
       where mkValue b = (Value (b <&> \ t -> Closure t [] []), [])
 
     -- Build the environment for a body with some given free variables from the
