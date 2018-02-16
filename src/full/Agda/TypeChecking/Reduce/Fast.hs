@@ -178,6 +178,26 @@ data FastCompiledClauses
   | FFail
     -- ^ Absurd case.
 
+instance Pretty a => Pretty (FastCase a) where
+  prettyPrec p (FBranches _cop cs suc ls m) =
+    mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prC m)
+    where
+      prC Nothing = []
+      prC (Just x) = [text "_ ->" <+> pretty x]
+
+instance Pretty NameId where
+  pretty = text . show
+
+instance Pretty FastCompiledClauses where
+  pretty (FDone xs t) = (text "done" <+> prettyList xs) <?> prettyPrec 10 t
+  pretty FFail        = text "fail"
+  pretty (FCase n bs) | fprojPatterns bs =
+    sep [ text "record"
+        , nest 2 $ pretty bs
+        ]
+  pretty (FCase n bs) =
+    text ("case " ++ prettyShow n ++ " of") <?> pretty bs
+
 -- type FastStack = [(FastCompiledClauses, [MaybeReduced (Elim' Value)], [Elim' Value] -> [Elim' Value])]
 
 fastCompiledClauses :: Maybe ConHead -> Maybe ConHead -> CompiledClauses -> FastCompiledClauses
