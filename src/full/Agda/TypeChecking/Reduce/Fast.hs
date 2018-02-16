@@ -480,11 +480,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
             COther                    -> runAM done -- TODO
 
         -- Nat zero
-        Con c i [] | Just c == zero ->
+        Con c i [] | isZero c ->
           runAM (Value (notBlocked $ Closure (Lit (LitNat noRange 0)) [] stack), ctrl)
 
         -- Nat suc
-        Con c i [] | Just c == suc, Apply v : stack' <- stack ->
+        Con c i [] | isSuc c, Apply v : stack' <- stack ->
           runAM (Eval (unArg v), sucCtrl ctrl)
 
         Con c i [] -> runAM (Value (notBlocked $ Closure (Con c' i []) env stack), ctrl)
@@ -543,16 +543,17 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
       case bv of
         Blocked{} -> runAM stuck
         NotBlocked _ cl@(Closure t env stack) -> case t of
-          Con c ci [] -> conFrame c ci (length stack) $ sucFrame c ci $ catchallFrame $ runAM nomatch
+          Con c ci [] | isSuc c -> sucFrame c ci $ catchallFrame $ runAM nomatch
+          Con c ci [] -> conFrame c ci (length stack) $ catchallFrame $ runAM nomatch
 
           Con{} -> __IMPOSSIBLE__ -- elims should have been shifted onto the stack
 
-          Lit l@(LitNat _ n) ->
-            litFrame l $ litsucFrame n $ zeroFrame n $ catchallFrame $ runAM nomatch
+          -- Note: Literal natural number patterns are translated to suc-matches
+          Lit (LitNat _ n) -> litsucFrame n $ zeroFrame n $ catchallFrame $ runAM nomatch
 
           Lit l -> litFrame l $ catchallFrame $ runAM nomatch
 
-          _ -> runAM stuck -- TODO
+          _ -> runAM stuck
           where
             -- Matching constructor
             conFrame c ci ar = lookupCon (conName c) bs =>? \ cc ->
@@ -567,7 +568,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
               runAM (Match f cl0 cc (patch . patchWild) (stack0 ++ stack1), ctrlFallThrough)
 
             -- Matching a constructor against 'suc'
-            sucFrame c ci | Just c == suc =
+            sucFrame c ci | isSuc c =
               fsucBranch bs =>? \ cc ->
                 runAM (Match f cl0 cc (patch . patchCon c ci 1)
                                       (stack0 ++ stack ++ stack1), ctrlFallThrough)
@@ -594,6 +595,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = decode . run
         patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
           where (es0, es1) = splitAt (length stack0) es
 
+        -- TODO: reason for being stuck (keep reason if bv is stuck, otherwise
+        --       StuckOn cl)
         stuck = (Value (clApply cl0 stack' <$ bv), ctrl)
           where stack' = patch $ stack0 ++ [Apply $ Arg i cl] ++ stack1
 
