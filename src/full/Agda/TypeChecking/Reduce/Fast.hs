@@ -427,7 +427,9 @@ compile t = (Eval (Closure t [] []), [])
 
 decodeClosure :: Closure -> Term
 decodeClosure (Closure t [] st) = t `applyE` (map . fmap) decodeClosure st
-decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst (parallelS $ map decodeClosure e) t) [] st)
+decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst rho t) [] st)
+  where rho  = parS (map decodeClosure e)
+        parS = foldr (:#) IdS  -- parallelS is too strict(?)
 
 elimsToStack :: Env -> Elims -> Stack
 elimsToStack env = (map . fmap) (mkClosure env)
