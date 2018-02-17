@@ -434,7 +434,12 @@ decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst rho t) [] s
 elimsToStack :: Env -> Elims -> Stack
 elimsToStack env = (map . fmap) (mkClosure env)
   where
-    mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)   -- important optimisation
+    -- Crucial optimisations:
+    mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
+    -- mkClosure env t@(Def f [])   = Closure t [] []
+    -- mkClosure env t@(Con c i []) = Closure t [] []
+    mkClosure env t@(Def f es)   = Closure (Def f []) [] (elimsToStack env es)
+    mkClosure env t@(Con c i es) = Closure (Con c i []) [] (elimsToStack env es)
     mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
