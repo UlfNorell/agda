@@ -386,7 +386,7 @@ clApply (Closure t env es) es' = Closure t env (es ++ es')
 
 type ControlStack = [ControlFrame]
 
-data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) Stack Stack
+data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) Int Stack Stack
                   | DoForce QName Stack Stack
                   | NatSuc Integer
                   | PatchMatch (Stack -> Stack)
@@ -594,7 +594,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
-    runAM' s@(Value bv, DoCase f i cl0 bs stack0 stack1 : ctrl) =
+    runAM' s@(Value bv, DoCase f i cl0 bs n stack0 stack1 : ctrl) =
       case bv of
         Blocked{} -> runAM stuck
         NotBlocked _ cl@(Closure t env stack) -> case t of
@@ -642,15 +642,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
             zeroFrame _ = id
 
-            -- TODO: this is terrible
-            n = length stack0
             patchCon c ci ar es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
               where (es0, rest) = splitAt n es
                     (es1, es2)  = splitAt ar rest
       where
         cl = ignoreBlocking bv
         patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
-          where (es0, es1) = splitAt (length stack0) es
+          where (es0, es1) = splitAt n es
 
         -- TODO: keeps the reason from the arg (old code used StuckOn elim for some cases..)
         stuck = (StuckMatch f (cl0 <$ bv) stack', ctrl)
@@ -689,7 +687,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             (_, []) -> runAM (done Underapplied)
             -- apply elim: push the current match on the control stack and
             -- evaluate the argument
-            (stack0, Apply e : stack1) -> runAM (Eval (unArg e), DoCase f (argInfo e) cl0 bs stack0 stack1 : ctrl)
+            (stack0, Apply e : stack1) -> runAM (Eval (unArg e), DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl)
             -- projection elim
             (stack0, e@(Proj o p) : stack1) ->
               case lookupCon p bs of
