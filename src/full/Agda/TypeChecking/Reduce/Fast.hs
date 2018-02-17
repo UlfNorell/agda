@@ -438,7 +438,7 @@ elimsToStack env = (map . fmap) (mkClosure env)
     mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . compile . traceDoc "tc.reduce.fast" 110 (text "-- fast reduce --")
+reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . compile . traceDoc (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     -- Force substitutions every nth step to avoid memory leaks. Doing it in
@@ -470,12 +470,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
 
     hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
 
-    traceDoc tag lvl doc
-      | hasVerb tag lvl = trace (show doc)
-      | otherwise       = id
+    traceDoc
+      | hasVerb "tc.reduce.fast" 110 = trace . show
+      | otherwise                    = const id
 
     -- runAM s = runAM' s
-    runAM s = traceDoc "tc.reduce.fast" 110 (pretty s) (runAM' s)
+    runAM s = traceDoc (pretty s) (runAM' s)
 
     runAM' :: AM -> Blocked Term
     runAM' (Value b, []) = decodeClosure <$> b
