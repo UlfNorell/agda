@@ -429,17 +429,24 @@ decodeClosure :: Closure -> Term
 decodeClosure (Closure t [] st) = t `applyE` (map . fmap) decodeClosure st
 decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst rho t) [] st)
   where rho  = parS (map decodeClosure e)
-        parS = foldr (:#) IdS  -- parallelS is too strict(?)
+        parS = foldr (:#) IdS  -- parallelS is too strict
 
 elimsToStack :: Env -> Elims -> Stack
-elimsToStack env = (map . fmap) (mkClosure env)
+elimsToStack env es = seq (forceStack stack) stack
   where
+    stack = (map . fmap) (mkClosure env) es
+
+    -- Need to be strict in mkClosure to avoid memory leak
+    forceStack = foldl (\ () -> forceEl) ()
+    forceEl (Apply (Arg _ Closure{})) = ()
+    forceEl _ = ()
+
     -- Crucial optimisations:
     mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
-    -- mkClosure env t@(Def f [])   = Closure t [] []
-    -- mkClosure env t@(Con c i []) = Closure t [] []
-    mkClosure env t@(Def f es)   = Closure (Def f []) [] (elimsToStack env es)
-    mkClosure env t@(Con c i es) = Closure (Con c i []) [] (elimsToStack env es)
+    mkClosure env t@(Def f [])   = Closure t [] []
+    mkClosure env t@(Con c i []) = Closure t [] []
+    -- mkClosure env t@(Def f es)   = Closure (Def f []) [] (elimsToStack env es)
+    -- mkClosure env t@(Con c i es) = Closure (Con c i []) [] (elimsToStack env es)
     mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
@@ -484,7 +491,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
 
     runAM' :: AM -> Blocked Term
     runAM' (Value b, []) = decodeClosure <$> b
-    runAM' s@(Eval cl@(Closure t env stack), ctrl) =
+    runAM' s@(Eval cl@(Closure t env stack), !ctrl) = -- The strict match is important!
       case t of
 
         Def f [] ->
@@ -641,7 +648,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             litsucFrame n = fsucBranch bs =>? \ cc ->
               runAM (Match f cl0 cc (stack0 ++ [n'] ++ stack1),
                      PatchMatch (patchCon (fromJust suc) ConOSystem 1) : ctrlFallThrough)
-              where n' = Apply $ defaultArg $ Closure (Lit (LitNat noRange (n - 1))) [] []
+              where n' = Apply $ defaultArg $ Closure (Lit $! LitNat noRange $! n - 1) [] []
 
             -- Matching 'zero'
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
@@ -685,7 +692,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             lams xs t = foldr lam t xs
             lam x t = Lam (argInfo x) (Abs (unArg x) t)
 
-        -- Split on nth elimination on the stac
+        -- Split on nth elimination on the stack
         FCase n bs ->
           case splitAt n stack of
             -- If the nth elimination is not given, we're done
@@ -702,7 +709,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
                       where (st0, st1) = splitAt n st
       where done why = (StuckMatch f (NotBlocked why cl0) stack, ctrl)
 
-    evalClosure = ((Eval .) .) . Closure
+    evalClosure t env stack = Eval (Closure t env stack)
 
     (=>?) :: Maybe a -> (a -> b) -> b -> b
     (m =>? f) z = maybe z f m
