@@ -74,6 +74,7 @@ import Data.Coerce
 
 import System.IO.Unsafe
 import Data.IORef
+import Data.Char
 
 import Debug.Trace (trace)
 
@@ -93,6 +94,7 @@ import Agda.TypeChecking.CompiledClause.Match ()
 
 import Agda.Interaction.Options
 
+import Agda.Utils.Float
 import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Maybe
@@ -151,35 +153,132 @@ compactDef bEnv def rewr = do
       AbstractDefn{}                 -> pure CAxiom
       Primitive{ primName = name, primCompiled = cc } ->
         case name of
-          "primNatPlus"      -> mkPrim2 $ natOp (+)
-          "primNatMinus"     -> mkPrim2 $ natOp (\ x y -> max 0 (x - y))
-          "primNatTimes"     -> mkPrim2 $ natOp (*)
-          "primNatDivSucAux" -> mkPrim4 $ natOp4 divAux
-          "primNatModSucAux" -> mkPrim4 $ natOp4 modAux
-          "primNatLess"      -> mkPrim2 $ natRel (<)
-          "primNatEquality"  -> mkPrim2 $ natRel (==)
-          _                  -> pure COther
+          -- "primShowInteger" -- integers are not literals
+
+          -- Natural numbers
+          "primNatPlus"                -> mkPrim 2 $ natOp (+)
+          "primNatMinus"               -> mkPrim 2 $ natOp (\ x y -> max 0 (x - y))
+          "primNatTimes"               -> mkPrim 2 $ natOp (*)
+          "primNatDivSucAux"           -> mkPrim 4 $ natOp4 divAux
+          "primNatModSucAux"           -> mkPrim 4 $ natOp4 modAux
+          "primNatLess"                -> mkPrim 2 $ natRel (<)
+          "primNatEquality"            -> mkPrim 2 $ natRel (==)
+
+          -- Word64
+          "primWord64ToNat"            -> mkPrim 1 $ \ [LitWord64 _ a] -> nat (fromIntegral a)
+          "primWord64FromNat"          -> mkPrim 1 $ \ [LitNat _ a]    -> word (fromIntegral a)
+
+          -- Levels are not literals
+          -- "primLevelZero"
+          -- "primLevelSuc"
+          -- "primLevelMax"
+
+          -- Floats
+          "primNatToFloat"             -> mkPrim 1 $ \ [LitNat _ a] -> float (fromIntegral a)
+          "primFloatPlus"              -> mkPrim 2 $ floatOp (+)
+          "primFloatMinus"             -> mkPrim 2 $ floatOp (-)
+          "primFloatTimes"             -> mkPrim 2 $ floatOp (*)
+          "primFloatNegate"            -> mkPrim 1 $ floatFun negate
+          "primFloatDiv"               -> mkPrim 2 $ floatOp (/)
+          "primFloatEquality"          -> mkPrim 2 $ floatRel floatEq
+          "primFloatLess"              -> mkPrim 2 $ floatRel floatLt
+          "primFloatNumericalEquality" -> mkPrim 2 $ floatRel (==)
+          "primFloatNumericalLess"     -> mkPrim 2 $ floatRel (<)
+          "primFloatSqrt"              -> mkPrim 1 $ floatFun sqrt
+          -- "primRound"    -- Integers are not literals
+          -- "primFloor"
+          -- "primCeiling"
+          "primExp"                    -> mkPrim 1 $ floatFun exp
+          "primLog"                    -> mkPrim 1 $ floatFun log
+          "primSin"                    -> mkPrim 1 $ floatFun sin
+          "primCos"                    -> mkPrim 1 $ floatFun cos
+          "primTan"                    -> mkPrim 1 $ floatFun tan
+          "primASin"                   -> mkPrim 1 $ floatFun asin
+          "primACos"                   -> mkPrim 1 $ floatFun acos
+          "primATan"                   -> mkPrim 1 $ floatFun atan
+          "primATan2"                  -> mkPrim 2 $ floatOp atan2
+          "primShowFloat"              -> mkPrim 1 $ \ [LitFloat _ a] -> string (show a)
+
+          -- Characters
+          "primCharEquality"           -> mkPrim 2 $ charRel (==)
+          "primIsLower"                -> mkPrim 1 $ charPred isLower
+          "primIsDigit"                -> mkPrim 1 $ charPred isDigit
+          "primIsAlpha"                -> mkPrim 1 $ charPred isAlpha
+          "primIsSpace"                -> mkPrim 1 $ charPred isSpace
+          "primIsAscii"                -> mkPrim 1 $ charPred isAscii
+          "primIsLatin1"               -> mkPrim 1 $ charPred isLatin1
+          "primIsPrint"                -> mkPrim 1 $ charPred isPrint
+          "primIsHexDigit"             -> mkPrim 1 $ charPred isHexDigit
+          "primToUpper"                -> mkPrim 1 $ charFun toUpper
+          "primToLower"                -> mkPrim 1 $ charFun toLower
+          "primCharToNat"              -> mkPrim 1 $ \ [LitChar _ a] -> nat (fromIntegral (fromEnum a))
+          "primNatToChar"              -> mkPrim 1 $ \ [LitNat  _ a] -> char (toEnum $ fromIntegral $ a `mod` 0x110000)
+          "primShowChar"               -> mkPrim 1 $ \ a -> string (show $ pretty a)
+
+          -- Strings
+          -- "primStringToList"     -- We don't have the list builtins (but could have, TODO)
+          -- "primStringFromList"   -- and they are not literals
+          "primStringAppend"           -> mkPrim 2 $ \ [LitString _ a, LitString _ b] -> string (b ++ a)
+          "primStringEquality"         -> mkPrim 2 $ \ [LitString _ a, LitString _ b] -> bool (b == a)
+          "primShowString"             -> mkPrim 1 $ \ a -> string (show $ pretty a)
+
+          -- "primTrustMe"
+          -- "primForce"
+          -- "primForceLemma"
+          "primQNameEquality"          -> mkPrim 2 $ \ [LitQName _ a, LitQName _ b] -> bool (b == a)
+          "primQNameLess"              -> mkPrim 2 $ \ [LitQName _ a, LitQName _ b] -> bool (b < a)
+          "primShowQName"              -> mkPrim 1 $ \ [LitQName _ a] -> string (show a)
+          -- "primQNameFixity"  -- We don't have fixity builtins (TODO)
+          "primMetaEquality"           -> mkPrim 2 $ \ [LitMeta _ _ a, LitMeta _ _ b] -> bool (b == a)
+          "primMetaLess"               -> mkPrim 2 $ \ [LitMeta _ _ a, LitMeta _ _ b] -> bool (b < a)
+          "primShowMeta"               -> mkPrim 1 $ \ [LitMeta _ _ a] -> string (show (pretty a))
+
+          _                            -> pure COther
         where
           fcc = fastCompiledClauses bEnv <$> cc
-          mkPrim2 op = pure $ CPrimOp 2 op fcc
-          mkPrim4 op = pure $ CPrimOp 4 op fcc
+          mkPrim n op = pure $ CPrimOp n op fcc
 
           divAux k m n j = k + div (max 0 $ n + m - j) (m + 1)
           modAux k m n j | n > j     = mod (n - j - 1) (m + 1)
                          | otherwise = k + n
 
-          -- Remember reverse order!
-          natOp f [LitNat _ a, LitNat _ b] = Lit (LitNat noRange $! f b a)
-          natOp _ _ = __IMPOSSIBLE__
-
-          natOp4 f [LitNat _ a, LitNat _ b, LitNat _ c, LitNat _ d] = Lit (LitNat noRange $! f d c b a)
-          natOp4 _ _ = __IMPOSSIBLE__
-
           ~(Just true)  = bTrue  bEnv <&> \ c -> Con c ConOSystem []
           ~(Just false) = bFalse bEnv <&> \ c -> Con c ConOSystem []
 
-          natRel f [LitNat _ a, LitNat _ b] = if f b a then true else false
+          bool   a = if a then true else false
+          nat    a = Lit . LitNat    noRange $! a
+          word   a = Lit . LitWord64 noRange $! a
+          float  a = Lit . LitFloat  noRange $! a
+          string a = Lit . LitString noRange $! a
+          char   a = Lit . LitChar   noRange $! a
+
+          -- Remember reverse order!
+          natOp f [LitNat _ a, LitNat _ b] = nat (f b a)
+          natOp _ _ = __IMPOSSIBLE__
+
+          natOp4 f [LitNat _ a, LitNat _ b, LitNat _ c, LitNat _ d] = nat (f d c b a)
+          natOp4 _ _ = __IMPOSSIBLE__
+
+          natRel f [LitNat _ a, LitNat _ b] = bool (f b a)
           natRel _ _ = __IMPOSSIBLE__
+
+          floatFun f [LitFloat _ a] = float (f a)
+          floatFun _ _ = __IMPOSSIBLE__
+
+          floatOp f [LitFloat _ a, LitFloat _ b] = float (f b a)
+          floatOp _ _ = __IMPOSSIBLE__
+
+          floatRel f [LitFloat _ a, LitFloat _ b] = bool (f b a)
+          floatRel _ _ = __IMPOSSIBLE__
+
+          charFun f [LitChar _ a] = char (f a)
+          charFun _ _ = __IMPOSSIBLE__
+
+          charPred f [LitChar _ a] = bool (f a)
+          charPred _ _ = __IMPOSSIBLE__
+
+          charRel f [LitChar _ a, LitChar _ b] = bool (f b a)
+          charRel _ _ = __IMPOSSIBLE__
 
   return $
     CompactDef { cdefDelayed        = defDelayed def == Delayed
