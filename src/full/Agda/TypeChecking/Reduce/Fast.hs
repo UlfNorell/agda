@@ -124,8 +124,8 @@ data CompactDefn
   | CForce  -- ^ primForce
   | CTyCon  -- ^ Datatype or record type. Need to know this for primForce.
   | CAxiom  -- ^ Axiom or abstract defn
-  | CPrimOp2 (Literal -> Literal -> Term) (Maybe FastCompiledClauses)
-  | CPrimOp4 (Literal -> Literal -> Literal -> Literal -> Term) (Maybe FastCompiledClauses)
+  | CPrimOp Int ([Literal] -> Term) (Maybe FastCompiledClauses)
+      -- ^ Literals in reverse argument order
   | COther  -- ^ In this case we fall back to slow reduction
 
 data BuiltinEnv = BuiltinEnv
@@ -161,24 +161,25 @@ compactDef bEnv def rewr = do
           _                  -> pure COther
         where
           fcc = fastCompiledClauses bEnv <$> cc
-          mkPrim2 op = pure $ CPrimOp2 op fcc
-          mkPrim4 op = pure $ CPrimOp4 op fcc
+          mkPrim2 op = pure $ CPrimOp 2 op fcc
+          mkPrim4 op = pure $ CPrimOp 4 op fcc
 
           divAux k m n j = k + div (max 0 $ n + m - j) (m + 1)
           modAux k m n j | n > j     = mod (n - j - 1) (m + 1)
                          | otherwise = k + n
 
-          natOp f (LitNat _ a) (LitNat _ b) = Lit (LitNat noRange $! f a b)
-          natOp _ _ _ = __IMPOSSIBLE__
+          -- Remember reverse order!
+          natOp f [LitNat _ a, LitNat _ b] = Lit (LitNat noRange $! f b a)
+          natOp _ _ = __IMPOSSIBLE__
 
-          natOp4 f (LitNat _ a) (LitNat _ b) (LitNat _ c) (LitNat _ d) = Lit (LitNat noRange $! f a b c d)
-          natOp4 _ _ _ _ _ = __IMPOSSIBLE__
+          natOp4 f [LitNat _ a, LitNat _ b, LitNat _ c, LitNat _ d] = Lit (LitNat noRange $! f d c b a)
+          natOp4 _ _ = __IMPOSSIBLE__
 
           ~(Just true)  = bTrue  bEnv <&> \ c -> Con c ConOSystem []
           ~(Just false) = bFalse bEnv <&> \ c -> Con c ConOSystem []
 
-          natRel f (LitNat _ a) (LitNat _ b) = if f a b then true else false
-          natRel _ _ _ = __IMPOSSIBLE__
+          natRel f [LitNat _ a, LitNat _ b] = if f b a then true else false
+          natRel _ _ = __IMPOSSIBLE__
 
   return $
     CompactDef { cdefDelayed        = defDelayed def == Delayed
@@ -375,8 +376,7 @@ data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) 
                   | NatSuc Integer
                   | PatchMatch (Stack -> Stack)
                   | FallThrough FastCompiledClauses
-                  | DoPrimOp2 QName (Literal -> Literal -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
-                  | DoPrimOp4 QName (Literal -> Literal -> Literal -> Literal -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
+                  | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses Stack
@@ -407,10 +407,7 @@ instance Pretty ControlFrame where
   prettyPrec _ (NatSuc n)    = text ("+" ++ show n)
   prettyPrec _ PatchMatch{}  = text "PatchMatch{}"
   prettyPrec p FallThrough{} = text "FallThrough{}" -- mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
-  prettyPrec p (DoPrimOp2 f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp2" <+> pretty f
-                                                                , nest 2 $ prettyList vs
-                                                                , nest 2 $ prettyList cls ]
-  prettyPrec p (DoPrimOp4 f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp4" <+> pretty f
+  prettyPrec p (DoPrimOp f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp" <+> pretty f
                                                                 , nest 2 $ prettyList vs
                                                                 , nest 2 $ prettyList cls ]
 
@@ -494,12 +491,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
               runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
             CForce -> runAM done
-            CPrimOp2 op cc | [Apply v1, Apply v2] <- stack ->
-              runAM (Eval (unArg v1), DoPrimOp2 f op [] [unArg v2] cc : ctrl)
-            CPrimOp4 op cc | [Apply v1, Apply v2, Apply v3, Apply v4] <- stack ->
-              runAM (Eval (unArg v1), DoPrimOp4 f op [] (map unArg [v2, v3, v4]) cc : ctrl)
-            CPrimOp2{} -> runAM done  -- partially applied
-            CPrimOp4{} -> runAM done
+            CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims stack ->
+              runAM (Eval (unArg v), DoPrimOp f op [] (map unArg vs) cc : ctrl)
+            CPrimOp{} -> runAM done  -- partially applied
 
         -- Nat zero
         Con c i [] | isZero c ->
@@ -555,23 +549,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         plus n cl = plus (n - 1) $ Closure (Con (fromJust suc) ConOSystem []) [] [Apply $ defaultArg cl]
 
     -- builtin functions
-    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp2 f op vs es cc : ctrl)
-      | [v] <- vs = runAM (Value (notBlocked $ Closure (op v a) [] []), ctrl)
-      | [e] <- es = runAM (Eval e, DoPrimOp2 f op [a] [] cc : ctrl)
-      | otherwise = __IMPOSSIBLE__
-    runAM' (Value cl, DoPrimOp2 f _ vs es mcc : ctrl) =
-      case mcc of
-        Nothing -> runAM' (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
-        Just cc -> runAM' (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
-      where
-        stack     = map (Apply . defaultArg) $ map litClos vs ++ [ignoreBlocking cl] ++ es
-        litClos l = Closure (Lit l) [] []
-        stuck     = Closure (Def f []) [] stack
-    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp4 f op vs es cc : ctrl)
-      | [v3, v2, v1] <- vs = runAM (Value (notBlocked $ Closure (op v1 v2 v3 a) [] []), ctrl)
-      | e : es'      <- es = runAM (Eval e, DoPrimOp4 f op (a : vs) es' cc : ctrl)
-      | otherwise = __IMPOSSIBLE__
-    runAM' (Value cl, DoPrimOp4 f _ vs es mcc : ctrl) =
+    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp f op vs es cc : ctrl) =
+      case es of
+        []      -> runAM (Value (notBlocked $ Closure (op (a : vs)) [] []), ctrl)
+        e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
+    runAM' (Value cl, DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
         Nothing -> runAM' (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
         Just cc -> runAM' (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
@@ -710,8 +692,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             matchy DoCase{}      = False
             matchy DoForce{}     = False
             matchy NatSuc{}      = False
-            matchy DoPrimOp2{}   = False
-            matchy DoPrimOp4{}   = False
+            matchy DoPrimOp{}    = False
             (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
