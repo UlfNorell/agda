@@ -124,16 +124,22 @@ data CompactDefn
   | CForce  -- ^ primForce
   | CTyCon  -- ^ Datatype or record type. Need to know this for primForce.
   | CAxiom  -- ^ Axiom or abstract defn
+  | CPrimOp2 (Literal -> Literal -> Term) (Maybe FastCompiledClauses)
+  | CPrimOp4 (Literal -> Literal -> Literal -> Literal -> Term) (Maybe FastCompiledClauses)
   | COther  -- ^ In this case we fall back to slow reduction
 
-compactDef :: Maybe ConHead -> Maybe ConHead -> Maybe QName -> Definition -> RewriteRules -> ReduceM CompactDef
-compactDef z s pf def rewr = do
+data BuiltinEnv = BuiltinEnv
+  { bZero, bSuc, bTrue, bFalse :: Maybe ConHead
+  , bPrimForce :: Maybe QName }
+
+compactDef :: BuiltinEnv -> Definition -> RewriteRules -> ReduceM CompactDef
+compactDef bEnv def rewr = do
   cdefn <-
     case theDef def of
-      _ | Just (defName def) == pf -> pure CForce
+      _ | Just (defName def) == bPrimForce bEnv -> pure CForce
       Constructor{conSrcCon = c} -> pure CCon{cconSrcCon = c}
       Function{funCompiled = Just cc, funClauses = _:_, funProjection = proj} ->
-        pure CFun{ cfunCompiled   = fastCompiledClauses z s cc
+        pure CFun{ cfunCompiled   = fastCompiledClauses bEnv cc
                  , cfunProjection = projOrig <$> proj }
       Function{funClauses = []}      -> pure CAxiom
       Function{}                     -> pure COther -- Incomplete definition
@@ -143,7 +149,37 @@ compactDef z s pf def rewr = do
       Record{}                       -> pure COther -- TODO
       Axiom{}                        -> pure CAxiom
       AbstractDefn{}                 -> pure CAxiom
-      Primitive{} -> pure COther
+      Primitive{ primName = name, primCompiled = cc } ->
+        case name of
+          "primNatPlus"      -> mkPrim2 $ natOp (+)
+          "primNatMinus"     -> mkPrim2 $ natOp (\ x y -> max 0 (x - y))
+          "primNatTimes"     -> mkPrim2 $ natOp (*)
+          "primNatDivSucAux" -> mkPrim4 $ natOp4 divAux
+          "primNatModSucAux" -> mkPrim4 $ natOp4 modAux
+          "primNatLess"      -> mkPrim2 $ natRel (<)
+          "primNatEquality"  -> mkPrim2 $ natRel (==)
+          _                  -> pure COther
+        where
+          fcc = fastCompiledClauses bEnv <$> cc
+          mkPrim2 op = pure $ CPrimOp2 op fcc
+          mkPrim4 op = pure $ CPrimOp4 op fcc
+
+          divAux k m n j = k + div (max 0 $ n + m - j) (m + 1)
+          modAux k m n j | n > j     = mod (n - j - 1) (m + 1)
+                         | otherwise = k + n
+
+          natOp f (LitNat _ a) (LitNat _ b) = Lit (LitNat noRange $! f a b)
+          natOp _ _ _ = __IMPOSSIBLE__
+
+          natOp4 f (LitNat _ a) (LitNat _ b) (LitNat _ c) (LitNat _ d) = Lit (LitNat noRange $! f a b c d)
+          natOp4 _ _ _ _ _ = __IMPOSSIBLE__
+
+          ~(Just true)  = bTrue  bEnv <&> \ c -> Con c ConOSystem []
+          ~(Just false) = bFalse bEnv <&> \ c -> Con c ConOSystem []
+
+          natRel f (LitNat _ a) (LitNat _ b) = if f a b then true else false
+          natRel _ _ _ = __IMPOSSIBLE__
+
   return $
     CompactDef { cdefDelayed        = defDelayed def == Delayed
                , cdefNonterminating = defNonterminating def
@@ -186,6 +222,25 @@ data FastCompiledClauses
   | FFail
     -- ^ Absurd case.
 
+fastCompiledClauses :: BuiltinEnv -> CompiledClauses -> FastCompiledClauses
+fastCompiledClauses bEnv cc =
+  case cc of
+    Fail              -> FFail
+    Done xs b         -> FDone xs b
+    Case (Arg _ n) bs -> FCase n (fastCase bEnv bs)
+
+fastCase :: BuiltinEnv -> Case CompiledClauses -> FastCase FastCompiledClauses
+fastCase env (Branches proj con lit wild _) =
+  FBranches
+    { fprojPatterns   = proj
+    , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses env . content) (stripSuc con)
+    , fsucBranch      = fmap (fastCompiledClauses env . content) $ flip Map.lookup con . conName =<< bSuc env
+    , flitBranches    = fmap (fastCompiledClauses env) lit
+    , fcatchAllBranch = fmap (fastCompiledClauses env) wild }
+  where
+    stripSuc | Just c <- bSuc env = Map.delete (conName c)
+             | otherwise          = id
+
 instance Pretty a => Pretty (FastCase a) where
   prettyPrec p (FBranches _cop cs suc ls m) =
     mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prSuc suc ++ prC m)
@@ -210,27 +265,6 @@ instance Pretty FastCompiledClauses where
     text ("case " ++ prettyShow n ++ " of") <?> pretty bs
 
 -- type FastStack = [(FastCompiledClauses, [MaybeReduced (Elim' Value)], [Elim' Value] -> [Elim' Value])]
-
-fastCompiledClauses :: Maybe ConHead -> Maybe ConHead -> CompiledClauses -> FastCompiledClauses
-fastCompiledClauses z s cc =
-  case cc of
-    Fail              -> FFail
-    Done xs b         -> FDone xs b
-    Case (Arg _ n) Branches{ etaBranch = Just (c, cc), catchAllBranch = ca } ->
-      FEta n (conFields c) (fastCompiledClauses z s $ content cc) (fastCompiledClauses z s <$> ca)
-    Case (Arg _ n) bs -> FCase n (fastCase z s bs)
-
-fastCase :: Maybe ConHead -> Maybe ConHead -> Case CompiledClauses -> FastCase FastCompiledClauses
-fastCase z s (Branches proj con _ lit wild _) =
-  FBranches
-    { fprojPatterns   = proj
-    , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses z s . content) (stripSuc con)
-    , fsucBranch      = fmap (fastCompiledClauses z s . content) $ flip Map.lookup con . conName =<< s
-    , flitBranches    = fmap (fastCompiledClauses z s) lit
-    , fcatchAllBranch = fmap (fastCompiledClauses z s) wild }
-  where
-    stripSuc | Just c <- s = Map.delete (conName c)
-             | otherwise   = id
 
 {-# INLINE lookupCon #-}
 lookupCon :: QName -> FastCase c -> Maybe c
@@ -299,72 +333,22 @@ fastReduce :: Bool -> Term -> ReduceM (Blocked Term)
 fastReduce allowNonTerminating v = do
   let name (Con c _ _) = c
       name _         = __IMPOSSIBLE__
-  z  <- fmap name <$> getBuiltin' builtinZero
-  s  <- fmap name <$> getBuiltin' builtinSuc
-  pf <- fmap primFunName <$> getPrimitive' "primForce"
+  zero  <- fmap name <$> getBuiltin' builtinZero
+  suc   <- fmap name <$> getBuiltin' builtinSuc
+  force <- fmap primFunName <$> getPrimitive' "primForce"
+  true  <- fmap name <$> getBuiltin' builtinTrue
+  false <- fmap name <$> getBuiltin' builtinFalse
+  let bEnv = BuiltinEnv { bZero = zero, bSuc = suc, bTrue = true, bFalse = false, bPrimForce = force }
   rwr <- optRewriting <$> pragmaOptions
   constInfo <- unKleisli $ \f -> do
     info <- getConstInfo f
-    rewr <- instantiateRewriteRules =<< getRewriteRulesFor f
-    compactDef z s pf info rewr
-  ReduceM $ \ env -> reduceTm env (memoQName constInfo) allowNonTerminating rwr z s v
+    rewr <- if rwr then instantiateRewriteRules =<< getRewriteRulesFor f
+                   else return []
+    compactDef bEnv info rewr
+  ReduceM $ \ env -> reduceTm env (memoQName constInfo) allowNonTerminating rwr bEnv v
 
 unKleisli :: (a -> ReduceM b) -> ReduceM (a -> b)
 unKleisli f = ReduceM $ \ env x -> unReduceM (f x) env
-
--- data VSub = VSub Substitution
---           | VStrictSub [Value]
-
--- makeVSub :: Bool -> [MaybeReduced (Elim' Value)] -> VSub
--- makeVSub strict es
---   | strict    = VStrictSub vs
---   | otherwise = VSub sub
---   where
---     vs  = reverse $ map (unArg . argFromElim . ignoreReduced) es
---     sub = parallelS $ map valueToTerm vs
-
--- applyVSub :: VSub -> Value -> Value
--- applyVSub (VSub sub)      = termToValue . applySubst sub . valueToTerm
--- applyVSub (VStrictSub vs) = coerce (strictSubst True) vs
-
--- data ValueView = VVar {-# UNPACK #-} !Int [Elim' Value]
---                | VCon ConHead ConInfo [Elim' Value]
---                | VDef QName [Elim' Value]
---                | VLit Literal
---                | VTerm Term
-
--- vCon :: ConHead -> ConInfo -> [Elim' Value] -> Value
--- vCon c i es = Value (Con c i $ coerce es)
-
--- vDef :: QName -> [Elim' Value] -> Value
--- vDef f es = Value (Def f $ coerce es)
-
--- vLit :: Literal -> Value
--- vLit l = Value (Lit l)
-
--- valueView :: Value -> ValueView
--- valueView (Value t) =
---   case t of
---     Var x es   -> VVar x (coerce es)
---     Con c i es -> VCon c i (coerce es)
---     Def f es   -> VDef f (coerce es)
---     Lit l      -> VLit l
---     _          -> VTerm t
-
--- valueToTerm :: Value -> Term
--- valueToTerm = coerce
-
--- elimsToTerm :: [Elim' Value] -> Elims
--- elimsToTerm = coerce
-
--- termToValue :: Term -> Value
--- termToValue = coerce
-
--- closure :: VSub -> Term -> Value
--- closure sub t = applyVSub sub (termToValue t)
-
--- applyV :: Value -> [Elim' Value] -> Value
--- applyV = coerce (applyE :: Term -> Elims -> Term)
 
 -- | For some reason...
 topMetaIsNotBlocked :: Blocked Term -> Blocked Term
@@ -391,6 +375,8 @@ data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) 
                   | NatSuc Integer
                   | PatchMatch (Stack -> Stack)
                   | FallThrough FastCompiledClauses
+                  | DoPrimOp2 QName (Literal -> Literal -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
+                  | DoPrimOp4 QName (Literal -> Literal -> Literal -> Literal -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses Stack
@@ -421,6 +407,12 @@ instance Pretty ControlFrame where
   prettyPrec _ (NatSuc n)    = text ("+" ++ show n)
   prettyPrec _ PatchMatch{}  = text "PatchMatch{}"
   prettyPrec p FallThrough{} = text "FallThrough{}" -- mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
+  prettyPrec p (DoPrimOp2 f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp2" <+> pretty f
+                                                                , nest 2 $ prettyList vs
+                                                                , nest 2 $ prettyList cls ]
+  prettyPrec p (DoPrimOp4 f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp4" <+> pretty f
+                                                                , nest 2 $ prettyList vs
+                                                                , nest 2 $ prettyList cls ]
 
 compile :: Term -> AM
 compile t = (Eval (Closure t [] []), [])
@@ -449,13 +441,11 @@ elimsToStack env es = seq (forceStack stack) stack
     -- mkClosure env t@(Con c i es) = Closure (Con c i []) [] (elimsToStack env es)
     mkClosure env t = Closure t env []
 
-reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> Maybe ConHead -> Maybe ConHead -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . compile . traceDoc (text "-- fast reduce --")
+reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
+reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile . traceDoc (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
-    -- Force substitutions every nth step to avoid memory leaks. Doing it in
-    -- every is too expensive (issue 2215).
-    -- strictEveryNth = 1000
+    BuiltinEnv{ bZero = zero, bSuc = suc } = bEnv
 
     metaStore = redSt env ^. stMetaStore
 
@@ -504,6 +494,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
               runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
             CForce -> runAM done
+            CPrimOp2 op cc | [Apply v1, Apply v2] <- stack ->
+              runAM (Eval (unArg v1), DoPrimOp2 f op [] [unArg v2] cc : ctrl)
+            CPrimOp4 op cc | [Apply v1, Apply v2, Apply v3, Apply v4] <- stack ->
+              runAM (Eval (unArg v1), DoPrimOp4 f op [] (map unArg [v2, v3, v4]) cc : ctrl)
+            CPrimOp2{} -> runAM done  -- partially applied
+            CPrimOp4{} -> runAM done
 
         -- Nat zero
         Con c i [] | isZero c ->
@@ -546,6 +542,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
         _ -> fallback s
       where done = (Value (notBlocked cl), ctrl)
 
+    -- +k continuations
     runAM' s@(Value bv, NatSuc m : ctrl) =
       case bv of
         NotBlocked _ (Closure (Lit (LitNat r n)) _ []) ->
@@ -556,6 +553,32 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
         -- TODO: optimised representation of sucⁿ t
         plus 0 cl = cl
         plus n cl = plus (n - 1) $ Closure (Con (fromJust suc) ConOSystem []) [] [Apply $ defaultArg cl]
+
+    -- builtin functions
+    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp2 f op vs es cc : ctrl)
+      | [v] <- vs = runAM (Value (notBlocked $ Closure (op v a) [] []), ctrl)
+      | [e] <- es = runAM (Eval e, DoPrimOp2 f op [a] [] cc : ctrl)
+      | otherwise = __IMPOSSIBLE__
+    runAM' (Value cl, DoPrimOp2 f _ vs es mcc : ctrl) =
+      case mcc of
+        Nothing -> runAM' (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
+        Just cc -> runAM' (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
+      where
+        stack     = map (Apply . defaultArg) $ map litClos vs ++ [ignoreBlocking cl] ++ es
+        litClos l = Closure (Lit l) [] []
+        stuck     = Closure (Def f []) [] stack
+    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp4 f op vs es cc : ctrl)
+      | [v3, v2, v1] <- vs = runAM (Value (notBlocked $ Closure (op v1 v2 v3 a) [] []), ctrl)
+      | e : es'      <- es = runAM (Eval e, DoPrimOp4 f op (a : vs) es' cc : ctrl)
+      | otherwise = __IMPOSSIBLE__
+    runAM' (Value cl, DoPrimOp4 f _ vs es mcc : ctrl) =
+      case mcc of
+        Nothing -> runAM' (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
+        Just cc -> runAM' (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
+      where
+        stack     = map (Apply . defaultArg) $ map litClos vs ++ [ignoreBlocking cl] ++ es
+        litClos l = Closure (Lit l) [] []
+        stuck     = Closure (Def f []) [] stack
 
     -- primForce
     runAM' (Value bv, DoForce pf stack0 stack1 : ctrl)
@@ -687,6 +710,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = runAM . comp
             matchy DoCase{}      = False
             matchy DoForce{}     = False
             matchy NatSuc{}      = False
+            matchy DoPrimOp2{}   = False
+            matchy DoPrimOp4{}   = False
             (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
