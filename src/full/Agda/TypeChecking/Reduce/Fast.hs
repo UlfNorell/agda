@@ -395,35 +395,35 @@ memoQName f = unsafePerformIO $ do
 -- Reverts to normal substitution if it hits a binder or other icky stuff (like
 -- levels). It's strict in the shape of the result to avoid creating huge
 -- thunks for accumulator arguments.
-strictSubst :: Bool -> [Term] -> Term -> Term
-strictSubst strict us
-  | not strict = applySubst rho
-  | otherwise  = go 0
-  where
-    rho = parallelS us
-    go k v =
-      case v of
-        Var x es
-          | x < k     -> Var x $! map' (goE k) es
-          | otherwise -> applyE (raise k $ us !! (x - k)) $! map' (goE k) es
-        Def f es -> defApp f [] $! map' (goE k) es
-        Con c ci es -> Con c ci $! map' (goE k) es
-        Lam i b  -> Lam i $! goAbs k b
-        Lit{}    -> v
-        _        -> applySubst (liftS k rho) v
+-- strictSubst :: Bool -> [Term] -> Term -> Term
+-- strictSubst strict us
+--   | not strict = applySubst rho
+--   | otherwise  = go 0
+--   where
+--     rho = parallelS us
+--     go k v =
+--       case v of
+--         Var x es
+--           | x < k     -> Var x $! map' (goE k) es
+--           | otherwise -> applyE (raise k $ us !! (x - k)) $! map' (goE k) es
+--         Def f es -> defApp f [] $! map' (goE k) es
+--         Con c ci es -> Con c ci $! map' (goE k) es
+--         Lam i b  -> Lam i $! goAbs k b
+--         Lit{}    -> v
+--         _        -> applySubst (liftS k rho) v
 
-    goE k (Apply v) = Apply $! mapArg' (go k) v
-    goE _ p         = p
+--     goE k (Apply v) = Apply $! mapArg' (go k) v
+--     goE _ p         = p
 
-    goAbs k (Abs   x v) = Abs   x $! go (k + 1) v
-    goAbs k (NoAbs x v) = NoAbs x $! go k v
+--     goAbs k (Abs   x v) = Abs   x $! go (k + 1) v
+--     goAbs k (NoAbs x v) = NoAbs x $! go k v
 
-map' :: (a -> b) -> [a] -> [b]
-map' f []       = []
-map' f (x : xs) = ((:) $! f x) $! map' f xs
+-- map' :: (a -> b) -> [a] -> [b]
+-- map' f []       = []
+-- map' f (x : xs) = ((:) $! f x) $! map' f xs
 
-mapArg' :: (a -> b) -> Arg a -> Arg b
-mapArg' f (Arg i x) = Arg i $! f x
+-- mapArg' :: (a -> b) -> Arg a -> Arg b
+-- mapArg' f (Arg i x) = Arg i $! f x
 
 
 -- Fast reduction ---------------------------------------------------------
@@ -529,12 +529,10 @@ elimsToStack env es = seq (forceStack stack) stack
     forceEl (Apply (Arg _ Closure{})) = ()
     forceEl _ = ()
 
-    -- Crucial optimisations:
+    -- The Var case is crucial, the Def and Con makes little difference
     mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
     mkClosure env t@(Def f [])   = Closure t [] []
     mkClosure env t@(Con c i []) = Closure t [] []
-    -- mkClosure env t@(Def f es)   = Closure (Def f []) [] (elimsToStack env es)
-    -- mkClosure env t@(Con c i es) = Closure (Con c i []) [] (elimsToStack env es)
     mkClosure env t = Closure t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
@@ -654,8 +652,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
     runAM' (Value cl, DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
-        Nothing -> runAM' (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
-        Just cc -> runAM' (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
+        Nothing -> runAM (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
+        Just cc -> runAM (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
         stack     = map (Apply . defaultArg) $ map litClos vs ++ [ignoreBlocking cl] ++ es
         litClos l = Closure (Lit l) [] []
