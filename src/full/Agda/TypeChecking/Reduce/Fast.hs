@@ -455,8 +455,17 @@ topMetaIsNotBlocked :: Blocked Term -> Blocked Term
 topMetaIsNotBlocked (Blocked _ t@MetaV{}) = notBlocked t
 topMetaIsNotBlocked b = b
 
-data Closure = Closure Term Env Stack  -- Env applied to the Term (the stack contains closures)
+data IsValue = Value (Blocked ())
+             | Unevaled
+
+data Closure = Closure IsValue Term Env Stack  -- Env applied to the Term (the stack contains closures)
 type Env = [Closure]
+
+isValue :: Closure -> IsValue
+isValue (Closure isV _ _ _) = isV
+
+setIsValue :: IsValue -> Closure -> Closure
+setIsValue isV (Closure _ t env stack) = Closure isV t env stack
 
 lookupEnv :: Int -> Env -> Maybe Closure
 lookupEnv i e | i < length e = Just (e !! i)
@@ -464,9 +473,10 @@ lookupEnv i e | i < length e = Just (e !! i)
 
 type Stack = [Elim' Closure]
 
+-- | Does not preserve 'IsValue'.
 clApply :: Closure -> Stack -> Closure
-clApply c                  []  = c
-clApply (Closure t env es) es' = Closure t env (es ++ es')
+clApply c                    []  = c
+clApply (Closure _ t env es) es' = Closure Unevaled t env (es ++ es')
 
 type ControlStack = [ControlFrame]
 
@@ -479,26 +489,25 @@ data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) 
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses Stack
-           | Value (Blocked Closure)
            | Mismatch QName Closure Stack
-           | StuckMatch QName (Blocked Closure) Stack
+           | StuckMatch QName Closure Stack
 
 type AM = (Focus, ControlStack)
 
 instance Pretty Closure where
-  prettyPrec p (Closure t env stack) =
-    mparens (p > 9) $ fsep [ text "C"
+  prettyPrec p (Closure isV t env stack) =
+    mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
                            , nest 2 $ text "_" -- prettyList $ zipWith envEntry [0..] env
                            , nest 2 $ prettyList stack ]
       where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
+            tag = case isV of Value{} -> "V"; Unevaled -> "E"
 
 instance Pretty Focus where
-  prettyPrec p (Eval cl)  = mparens (p > 9) (text "E" <?> prettyPrec 10 cl)
-  prettyPrec p (Value cl) = mparens (p > 9) (text "V" <?> prettyPrec 10 (ignoreBlocking cl))
+  prettyPrec p (Eval cl)  = prettyPrec p cl
   prettyPrec p (Match _ cl cc st) = mparens (p > 9) $ (text "M" <?> prettyPrec 10 (clApply cl st)) <?> prettyPrec 10 cc
   prettyPrec p (Mismatch _ cl st) = mparens (p > 9) $ text "⊥" <?> prettyPrec 10 (clApply cl st)
-  prettyPrec p (StuckMatch _ cl st) = mparens (p > 9) $ text "B" <?> prettyPrec 10 (clApply (ignoreBlocking cl) st)
+  prettyPrec p (StuckMatch _ cl st) = mparens (p > 9) $ text "B" <?> prettyPrec 10 (clApply cl st)
 
 instance Pretty ControlFrame where
   prettyPrec _ DoCase{}      = text "DoCase{}"
@@ -511,12 +520,13 @@ instance Pretty ControlFrame where
                                                                 , nest 2 $ prettyList cls ]
 
 compile :: Term -> AM
-compile t = (Eval (Closure t [] []), [])
+compile t = (Eval (Closure Unevaled t [] []), [])
 
-decodeClosure :: Closure -> Term
-decodeClosure (Closure t [] st) = t `applyE` (map . fmap) decodeClosure st
-decodeClosure (Closure t e st)  = decodeClosure (Closure (applySubst rho t) [] st)
-  where rho  = parS (map decodeClosure e)
+decodeClosure :: Closure -> Blocked Term
+decodeClosure (Closure isV t [] st) = applyE t ((map . fmap) (ignoreBlocking . decodeClosure) st) <$ b
+  where b = case isV of Value b -> b; Unevaled -> notBlocked ()
+decodeClosure (Closure isV t e st)  = decodeClosure (Closure isV (applySubst rho t) [] st)
+  where rho  = parS (map (ignoreBlocking . decodeClosure) e)
         parS = foldr (:#) IdS  -- parallelS is too strict
 
 elimsToStack :: Env -> Elims -> Stack
@@ -531,9 +541,9 @@ elimsToStack env es = seq (forceStack stack) stack
 
     -- The Var case is crucial, the Def and Con makes little difference
     mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
-    mkClosure env t@(Def f [])   = Closure t [] []
-    mkClosure env t@(Con c i []) = Closure t [] []
-    mkClosure env t = Closure t env []
+    mkClosure env t@(Def f [])   = Closure Unevaled t [] []
+    mkClosure env t@(Con c i []) = Closure Unevaled t [] []
+    mkClosure env t = Closure Unevaled t env []
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
 reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile . traceDoc (text "-- fast reduce --")
@@ -574,13 +584,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     runAM s = traceDoc (pretty s) (runAM' s)
 
     runAM' :: AM -> Blocked Term
-    runAM' (Value b, []) = decodeClosure <$> b
-    runAM' s@(Eval cl@(Closure t env stack), !ctrl) = -- The strict match is important!
+    runAM' (Eval cl@(Closure Value{} _ _ _), []) = decodeClosure cl
+    runAM' s@(Eval cl@(Closure Unevaled t env stack), !ctrl) = -- The strict match is important!
       case t of
 
         Def f [] ->
           case cdefDef (constInfo f) of
-            CFun{ cfunCompiled = cc } -> runAM (Match f (Closure t [] []) cc stack, ctrl)
+            CFun{ cfunCompiled = cc } -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
             CAxiom                    -> runAM done
             CTyCon                    -> runAM done
             CCon{}                    -> __IMPOSSIBLE__
@@ -594,13 +604,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
         -- Nat zero
         Con c i [] | isZero c ->
-          runAM (Value (notBlocked $ Closure (Lit (LitNat noRange 0)) [] stack), ctrl)
+          runAM (evalValueNoBlk (Lit (LitNat noRange 0)) [] stack, ctrl)
 
         -- Nat suc
         Con c i [] | isSuc c, Apply v : stack' <- stack ->
           runAM (Eval (unArg v), sucCtrl ctrl)
 
-        Con c i [] -> runAM (Value (notBlocked $ Closure (Con c' i []) env stack), ctrl)
+        Con c i [] -> runAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
           where CCon{cconSrcCon = c'} = cdefDef (constInfo (conName c))
           -- TODO: projection
 
@@ -615,7 +625,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             Just inst  -> case inst of
               InstV xs t -> runAM (evalClosure t env stack', ctrl)
                 where (zs, env, stack') = buildEnv xs stack
-              _          -> runAM (Value (blocked m cl), ctrl)
+              _          -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
         Lit{} -> runAM done
         Pi{}  -> runAM done
@@ -631,45 +641,46 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         MetaV m es -> runAM (evalClosure (MetaV m []) env $ elimsToStack env es ++ stack, ctrl)
 
         _ -> fallback s
-      where done = (Value (notBlocked cl), ctrl)
+      where done = (Eval $ mkValue (notBlocked ()) cl, ctrl)
 
     -- +k continuations
-    runAM' s@(Value bv, NatSuc m : ctrl) =
-      case bv of
-        NotBlocked _ (Closure (Lit (LitNat r n)) _ []) ->
-          runAM (Value $ notBlocked $ Closure (Lit $ LitNat r $! m + n) [] [], ctrl)
-        _ -> runAM stuck
+    runAM' s@(Eval cl@(Closure Value{} t _ stack), NatSuc m : ctrl) =
+      case (t, stack) of
+        (Lit (LitNat r n), []) ->
+          runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] [], ctrl)
+        _ -> runAM (Eval stuck, ctrl)
       where
-        stuck = (Value (notBlocked $ plus m $ ignoreBlocking bv), ctrl)
+        stuck = mkValue (notBlocked ()) $ plus m cl
         -- TODO: optimised representation of sucⁿ t
         plus 0 cl = cl
-        plus n cl = plus (n - 1) $ Closure (Con (fromJust suc) ConOSystem []) [] [Apply $ defaultArg cl]
+        plus n cl = Closure (Value $ notBlocked ())
+                            (Con (fromJust suc) ConOSystem [])
+                            [] [Apply $ defaultArg $ plus (n - 1) cl]
 
     -- builtin functions
-    runAM' (Value (NotBlocked _ (Closure (Lit a) _ [])), DoPrimOp f op vs es cc : ctrl) =
+    runAM' (Eval (Closure _ (Lit a) _ []), DoPrimOp f op vs es cc : ctrl) =
       case es of
-        []      -> runAM (Value (notBlocked $ Closure (op (a : vs)) [] []), ctrl)
+        []      -> runAM (evalValueNoBlk (op (a : vs)) [] [], ctrl)
         e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
-    runAM' (Value cl, DoPrimOp f _ vs es mcc : ctrl) =
+    runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
-        Nothing -> runAM (Value (stuck <$ cl), ctrl)                         -- Not a literal and no clauses: stuck
-        Just cc -> runAM (Match f (Closure (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
+        Nothing -> runAM (Eval stuck, ctrl)                                           -- Not a literal and no clauses: stuck
+        Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
-        stack     = map (Apply . defaultArg) $ map litClos vs ++ [ignoreBlocking cl] ++ es
-        litClos l = Closure (Lit l) [] []
-        stuck     = Closure (Def f []) [] stack
+        stack     = map (Apply . defaultArg) $ map litClos vs ++ [cl] ++ es
+        litClos l = Closure (Value $ notBlocked ()) (Lit l) [] []
+        stuck     = Closure (Value blk) (Def f []) [] stack
 
     -- primForce
-    runAM' (Value bv, DoForce pf stack0 stack1 : ctrl)
+    runAM' (Eval arg@(Closure (Value blk) t _ _), DoForce pf stack0 stack1 : ctrl)
       | isWHNF t =
         case stack1 of
           Apply k : stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) : stack')), ctrl)
           _ : _            -> __IMPOSSIBLE__
           []               -> __IMPOSSIBLE__    -- TODO: need to build \ k -> k arg
-      | otherwise = runAM (Value (stuck <$ bv), ctrl)
+      | otherwise = runAM (Eval stuck, ctrl)
       where
-        stuck = Closure (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
-        arg@(Closure t _ _) = ignoreBlocking bv
+        stuck = Closure (Value blk) (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
         isWHNF u = case u of
           Lit{}      -> True
           Con{}      -> True
@@ -695,23 +706,24 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     runAM' s@(StuckMatch f cl0 stack, FallThrough{} : ctrl) =
       runAM (StuckMatch f cl0 stack, ctrl)
     runAM' s@(Mismatch f cl0 stack, ctrl) =   -- TODO: fail unless f `elem` partialDefs
-      runAM (Value (NotBlocked MissingClauses $ cl0 `clApply` stack), ctrl)
+      runAM (Eval (mkValue (NotBlocked MissingClauses ()) $ cl0 `clApply` stack), ctrl)
 
 
     -- Recover from a stuck match
-    runAM' (StuckMatch f cl0 stack, ctrl) = runAM (Value ((`clApply` stack) <$> cl0), ctrl)
+    runAM' (StuckMatch f cl0 stack, ctrl) = runAM (Eval (mkValue blk $ clApply cl0 stack), ctrl)
+      where Value blk = isValue cl0 -- cl0 should be a Value or we'd loop
 
     -- Impossible cases (we clean up FallThrough and PatchMatch frames before returning from a case)
-    runAM' (Value{}, FallThrough{} : _) =
+    runAM' (Eval (Closure Value{} _ _ _), FallThrough{} : _) =
       __IMPOSSIBLE__
-    runAM' (Value{}, PatchMatch{} : _) =
+    runAM' (Eval (Closure Value{} _ _ _), PatchMatch{} : _) =
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
-    runAM' s@(Value bv, DoCase f i cl0 bs n stack0 stack1 : ctrl) =
-      case bv of
-        Blocked{} -> runAM stuck
-        NotBlocked _ cl@(Closure t env stack) -> case t of
+    runAM' s@(Eval cl@(Closure (Value blk) t env stack), DoCase f i cl0 bs n stack0 stack1 : ctrl) =
+      case blk of
+        Blocked{}    -> runAM stuck
+        NotBlocked{} -> case t of
           Con c ci [] | isSuc c -> sucFrame c ci $ catchallFrame $ runAM nomatch
           Con c ci [] -> conFrame c ci (length stack) $ catchallFrame $ runAM nomatch
 
@@ -750,22 +762,21 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             litsucFrame n = fsucBranch bs =>? \ cc ->
               runAM (Match f cl0 cc (stack0 ++ [n'] ++ stack1),
                      PatchMatch (patchCon (fromJust suc) ConOSystem 1) : ctrlFallThrough)
-              where n' = Apply $ defaultArg $ Closure (Lit $! LitNat noRange $! n - 1) [] []
+              where n' = Apply $ defaultArg $ Closure (Value $ notBlocked ()) (Lit $! LitNat noRange $! n - 1) [] []
 
             -- Matching 'zero'
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
             zeroFrame _ = id
 
-            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ Closure (Con c ci []) [] es1] ++ es2
+            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ Closure (Value $ notBlocked ()) (Con c ci []) [] es1] ++ es2
               where (es0, rest) = splitAt n es
                     (es1, es2)  = splitAt ar rest
       where
-        cl = ignoreBlocking bv
         patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
           where (es0, es1) = splitAt n es
 
         -- TODO: keeps the reason from the arg (old code used StuckOn elim for some cases..)
-        stuck = (StuckMatch f (cl0 <$ bv) stack', ctrl)
+        stuck = (StuckMatch f (setIsValue (Value blk) cl0) stack', ctrl)
           where stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
 
         -- Push catch-all frame if there is a catch-all
@@ -781,8 +792,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     runAM' s@(Match f cl0 cc stack, ctrl) =
       case cc of
         -- impossible case
-        FFail         -> runAM (StuckMatch f (NotBlocked AbsurdMatch cl0) stack, ctrl)
-        FDone xs body -> runAM (Eval (Closure (lams zs body) env stack'), dropWhile matchy ctrl)
+        FFail         -> runAM (StuckMatch f (mkValue (NotBlocked AbsurdMatch ()) cl0) stack, ctrl)
+        FDone xs body -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), dropWhile matchy ctrl)
           where
             matchy PatchMatch{}  = True
             matchy FallThrough{} = True
@@ -810,16 +821,21 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
                 Just cc -> runAM (Match f cl0 cc (stack0 ++ stack1), PatchMatch patchProj : ctrl)
               where patchProj st = st0 ++ [e] ++ st1
                       where (st0, st1) = splitAt n st
-      where done why = (StuckMatch f (NotBlocked why cl0) stack, ctrl)
+      where done why = (StuckMatch f (mkValue (NotBlocked why ()) cl0) stack, ctrl)
 
-    evalClosure t env stack = Eval (Closure t env stack)
+    evalClosure t env stack = Eval (Closure Unevaled t env stack)
+
+    evalValue b t env stack = Eval (Closure (Value b) t env stack)
+    evalValueNoBlk = evalValue $ notBlocked ()
+
+    mkValue b (Closure _ t env stack) = Closure (Value b) t env stack
 
     (=>?) :: Maybe a -> (a -> b) -> b -> b
     (m =>? f) z = maybe z f m
 
     fallback :: AM -> Blocked Term
-    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure c, ctrl)
-      where mkValue b = Value (b <&> \ t -> Closure t [] [])
+    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ ignoreBlocking $ decodeClosure c, ctrl)
+      where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] []
     fallback _ = __IMPOSSIBLE__
 
     -- Build the environment for a body with some given free variables from the
