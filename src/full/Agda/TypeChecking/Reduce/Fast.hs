@@ -667,7 +667,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Nothing -> runAM (Eval stuck, ctrl)                                           -- Not a literal and no clauses: stuck
         Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
-        stack     = map (Apply . defaultArg) $ map litClos vs ++ [cl] ++ es
+        stack     = map (Apply . defaultArg) $ map litClos (reverse vs) ++ [cl] ++ es
         litClos l = Closure (Value $ notBlocked ()) (Lit l) [] []
         stuck     = Closure (Value blk) (Def f []) [] stack
 
