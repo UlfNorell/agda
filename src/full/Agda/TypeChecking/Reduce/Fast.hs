@@ -659,7 +659,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         stuck = mkValue (notBlocked ()) $ plus m cl
         -- TODO: optimised representation of sucⁿ t
         plus 0 cl = cl
-        plus n cl = Closure (Value $ notBlocked ())
+        plus n cl = valueNoBlk
                             (Con (fromJust suc) ConOSystem [])
                             [] [Apply $ defaultArg $ plus (n - 1) cl]
 
@@ -674,7 +674,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
         stack     = map (Apply . defaultArg) $ map litClos (reverse vs) ++ [cl] ++ es
-        litClos l = Closure (Value $ notBlocked ()) (Lit l) [] []
+        litClos l = valueNoBlk (Lit l) [] []
         stuck     = Closure (Value blk) (Def f []) [] stack
 
     -- primForce
@@ -760,21 +760,26 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             sucFrame c ci | isSuc c =
               fsucBranch bs =>? \ cc ->
                 runAM (Match f cl0 cc (stack0 ++ stack ++ stack1),
-                       PatchMatch (patchCon c ci 1) : ctrlFallThrough)
+                       PatchMatch (patchSuc c ci) : ctrlFallThrough)
             sucFrame _ _ = id
 
             -- Matching a literal against 'suc'
             litsucFrame n | n <= 0 = id
             litsucFrame n = fsucBranch bs =>? \ cc ->
               runAM (Match f cl0 cc (stack0 ++ [n'] ++ stack1),
-                     PatchMatch (patchCon (fromJust suc) ConOSystem 1) : ctrlFallThrough)
-              where n' = Apply $ defaultArg $ Closure (Value $ notBlocked ()) (Lit $! LitNat noRange $! n - 1) [] []
+                     PatchMatch (patchSuc (fromJust suc) ConOSystem) : ctrlFallThrough)
+              where n' = Apply $ defaultArg $ valueNoBlk (Lit $! LitNat noRange $! n - 1) [] []
 
             -- Matching 'zero'
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
             zeroFrame _ = id
 
-            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ Closure (Value $ notBlocked ()) (Con c ci []) [] es1] ++ es2
+            patchSuc c ci es = es0 ++ [inc <$> arg] ++ es1
+              where (es0, arg : es1) = splitAt n es
+                    inc (Closure isV (Lit (LitNat r m)) _ []) = Closure isV (Lit $! LitNat r $! m + 1) [] []
+                    inc t = valueNoBlk (Con c ci []) [] [Apply $ defaultArg t]
+
+            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ valueNoBlk (Con c ci []) [] es1] ++ es2
               where (es0, rest) = splitAt n es
                     (es1, es2)  = splitAt ar rest
       where
@@ -833,6 +838,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     evalValue b t env stack = Eval (Closure (Value b) t env stack)
     evalValueNoBlk = evalValue $ notBlocked ()
+    valueNoBlk t env stack = Closure (Value $ notBlocked ()) t env stack
 
     mkValue b (Closure _ t env stack) = Closure (Value b) t env stack
 
