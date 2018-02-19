@@ -122,7 +122,7 @@ data CompactDef =
 
 data CompactDefn
   = CFun  { cfunCompiled  :: FastCompiledClauses, cfunProjection :: Maybe QName }
-  | CCon  { cconSrcCon    :: ConHead }
+  | CCon  { cconSrcCon :: ConHead, cconArity :: Int }
   | CForce  -- ^ primForce
   | CTyCon  -- ^ Datatype or record type. Need to know this for primForce.
   | CAxiom  -- ^ Axiom or abstract defn
@@ -139,7 +139,7 @@ compactDef bEnv def rewr = do
   cdefn <-
     case theDef def of
       _ | Just (defName def) == bPrimForce bEnv -> pure CForce
-      Constructor{conSrcCon = c} -> pure CCon{cconSrcCon = c}
+      Constructor{conSrcCon = c, conArity = n} -> pure CCon{cconSrcCon = c, cconArity = n}
       Function{funCompiled = Just cc, funClauses = _:_, funProjection = proj} ->
         pure CFun{ cfunCompiled   = fastCompiledClauses bEnv cc
                  , cfunProjection = projOrig <$> proj }
@@ -610,9 +610,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Con c i [] | isSuc c, Apply v : stack' <- stack ->
           runAM (Eval (unArg v), sucCtrl ctrl)
 
-        Con c i [] -> runAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
-          where CCon{cconSrcCon = c'} = cdefDef (constInfo (conName c))
-          -- TODO: projection
+        Con c i [] ->
+          case splitAt ar stack of
+            (args, Proj _ p : stack') -> runAM (Eval (clApply (unArg arg) stack'), ctrl)
+              where
+                fields    = conFields c
+                Just n    = List.elemIndex p fields
+                Apply arg = args !! n
+            _ -> runAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
+          where CCon{cconSrcCon = c', cconArity = ar} = cdefDef (constInfo (conName c))
 
         Var x []   ->
           case lookupEnv x env of
