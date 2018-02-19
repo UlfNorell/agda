@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE BangPatterns  #-}
 {-# LANGUAGE PatternGuards #-}
-
+{-# LANGUAGE PatternSynonyms #-}
 
 {-|
 
@@ -77,7 +77,6 @@ import System.IO.Unsafe
 import Data.IORef
 import Data.Char
 import qualified Data.Sequence as Seq
-import Data.Sequence (Seq((:<|)), ViewL(..), viewl, (><), (<|))
 
 import Debug.Trace (trace)
 
@@ -474,15 +473,61 @@ lookupEnv :: Int -> Env -> Maybe Closure
 lookupEnv i e | i < length e = Just (e !! i)
               | otherwise    = Nothing
 
-type Stack = Seq (Elim' Closure)
+type Stack = StackC (Elim' Closure)
+
+-- "Abstract" interface to stacks. Change StackC and the functions below to
+-- change the representation of stacks.
+
+type StackC     = []
+type StackViewL = []
+
+pattern (:<) :: a -> StackViewL a -> StackViewL a
+pattern (:<) x xs = x : xs
+
+pattern EmptyL :: StackViewL a
+pattern EmptyL = []
+
+infixr 5 :<|, :<, <|, ><
+
+pattern (:<|) :: a -> StackC a -> StackC a
+pattern (:<|) x xs = x : xs
+
+(<|) :: a -> StackC a -> StackC a
+(<|) = (:)
+
+(><) :: StackC a -> StackC a -> StackC a
+(><) = (++)
+
+viewl :: StackC a -> StackViewL a
+viewl = id
+
+emptyStack :: StackC a
+emptyStack = []
+
+isEmptyStack :: StackC a -> Bool
+isEmptyStack = null
+
+stackFromList :: [a] -> StackC a
+stackFromList = id
+
+stackToList :: StackC a -> [a]
+stackToList = id
+
+splitStack :: Int -> StackC a -> (StackC a, StackC a)
+splitStack = splitAt
+
+indexStack :: StackC a -> Int -> a
+indexStack = (!!)
+
+-- End of stack API --
 
 -- | Does not preserve 'IsValue'.
 clApply :: Closure -> Stack -> Closure
-clApply c es' | Seq.null es' = c
+clApply c es' | isEmptyStack es' = c
 clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
-spliceSeq :: Seq a -> a -> Seq a -> Seq a
-spliceSeq s0 e s1 = s0 >< e <| s1
+spliceStack :: StackC a -> a -> StackC a -> StackC a
+spliceStack s0 e s1 = s0 >< e <| s1
 
 type ControlStack = [ControlFrame]
 
@@ -526,7 +571,7 @@ instance Pretty ControlFrame where
                                                                 , nest 2 $ prettyList cls ]
 
 compile :: Term -> AM
-compile t = (Eval (Closure Unevaled t [] Seq.empty), [])
+compile t = (Eval (Closure Unevaled t [] emptyStack), [])
 
 decodeClosure_ :: Closure -> Term
 decodeClosure_ = ignoreBlocking . decodeClosure
@@ -543,7 +588,7 @@ elimsToStack :: Env -> Elims -> Stack
 elimsToStack env es = seq (forceStack closures) stack
   where
     closures = (map . fmap) (mkClosure env) es
-    stack    = Seq.fromList closures
+    stack    = stackFromList closures
 
     -- Need to be strict in mkClosure to avoid memory leak
     forceStack = foldl (\ () -> forceEl) ()
@@ -552,9 +597,9 @@ elimsToStack env es = seq (forceStack closures) stack
 
     -- The Var case is crucial, the Def and Con makes little difference
     mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
-    mkClosure env t@(Def f [])   = Closure Unevaled t [] Seq.empty
-    mkClosure env t@(Con c i []) = Closure Unevaled t [] Seq.empty
-    mkClosure env t = Closure Unevaled t env Seq.empty
+    mkClosure env t@(Def f [])   = Closure Unevaled t [] emptyStack
+    mkClosure env t@(Con c i []) = Closure Unevaled t [] emptyStack
+    mkClosure env t = Closure Unevaled t env emptyStack
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
 reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile . traceDoc (text "-- fast reduce --")
@@ -585,6 +630,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         CTyCon -> True
         _      -> False
 
+    originalProjection :: QName -> QName
+    originalProjection q =
+      case cdefDef $ constInfo q of
+        CFun{ cfunProjection = Just p } -> p
+        _                               -> __IMPOSSIBLE__
+
     rewriteRules f = cdefRewriteRules (constInfo f)
 
     hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
@@ -612,12 +663,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           in case def of
             CFun{ cfunCompiled = cc }
               | dontUnfold            -> runAM done
-              | otherwise             -> runAM (Match f (Closure Unevaled t [] Seq.empty) cc stack, ctrl)
+              | otherwise             -> runAM (Match f (Closure Unevaled t [] emptyStack) cc stack, ctrl)
             CAxiom                    -> rewriteAM done
             CTyCon                    -> rewriteAM done
             CCon{}                    -> runAM done   -- Only happens for builtinSharp (which is a Def when you bind it)
             COther                    -> fallback s
-            CForce | (stack0, Apply v :<| stack1) <- Seq.splitAt 4 stack ->
+            CForce | (stack0, Apply v :<| stack1) <- splitStack 4 stack ->
               runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
             CForce -> runAM done
             CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims (toList stack) ->
@@ -633,12 +684,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           runAM (Eval (unArg v), sucCtrl ctrl)
 
         Con c i [] ->
-          case Seq.splitAt ar stack of
+          case splitStack ar stack of
             (args, Proj _ p :<| stack') -> runAM (Eval (clApply (unArg arg) stack'), ctrl)
               where
                 fields    = conFields c
                 Just n    = List.elemIndex p fields
-                Apply arg = Seq.index args n
+                Apply arg = indexStack args n
             _ -> rewriteAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
           where CCon{cconSrcCon = c', cconArity = ar} = cdefDef (constInfo (conName c))
 
@@ -665,7 +716,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
                 Abs   _ b -> runAM (evalClosure b (unArg v : env) stack', ctrl)
                 NoAbs _ b -> runAM (evalClosure b env stack', ctrl)
             EmptyL -> runAM done
-            _ :< _ -> __IMPOSSIBLE__
+            _ -> __IMPOSSIBLE__
 
         Def f es   -> runAM (evalClosure (Def f [])   env $ elimsToStack env es >< stack, ctrl)
         Con c i es -> runAM (evalClosure (Con c i []) env $ elimsToStack env es >< stack, ctrl)
@@ -677,26 +728,26 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     -- +k continuations
     runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSuc m : ctrl) =
-      runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] Seq.empty, ctrl)
+      runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] emptyStack, ctrl)
     runAM' (Eval cl, NatSuc m : ctrl) = runAM (Eval stuck, ctrl)
       where
         stuck = mkValue (notBlocked ()) $ plus m cl
         plus 0 cl = cl
         plus n cl = valueNoBlk (Con (fromJust suc) ConOSystem [])
-                               [] $ Seq.singleton $ Apply $ defaultArg $ plus (n - 1) cl
+                               [] $ (Apply $ defaultArg $ plus (n - 1) cl) <| emptyStack
 
     -- builtin functions
     runAM' (Eval (Closure _ (Lit a) _ _), DoPrimOp f op vs es cc : ctrl) =
       case es of
-        []      -> runAM (evalValueNoBlk (op (a : vs)) [] Seq.empty, ctrl)
+        []      -> runAM (evalValueNoBlk (op (a : vs)) [] emptyStack, ctrl)
         e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
     runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
         Nothing -> rewriteAM (Eval stuck, ctrl)                                       -- Not a literal and no clauses: stuck
-        Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] Seq.empty) cc stack, ctrl) -- otherwise try the clauses on non-literal
+        Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] emptyStack) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
-        stack     = fmap (Apply . defaultArg) $ spliceSeq (Seq.fromList (map litClos (reverse vs))) cl (Seq.fromList es)
-        litClos l = valueNoBlk (Lit l) [] Seq.empty
+        stack     = fmap (Apply . defaultArg) $ spliceStack (stackFromList (map litClos (reverse vs))) cl (stackFromList es)
+        litClos l = valueNoBlk (Lit l) [] emptyStack
         stuck     = Closure (Value blk) (Def f []) [] stack
 
     -- primForce
@@ -704,13 +755,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       | isWHNF t =
         case viewl stack1 of
           Apply k :< stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) <| stack')), ctrl)
-          _ :< _            -> __IMPOSSIBLE__
           EmptyL            -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
-                                                  [arg] Seq.empty, ctrl)  -- Reduce to λ k → k arg
+                                                  [arg] emptyStack, ctrl)  -- Reduce to λ k → k arg
             where lam x = Lam defaultArgInfo . Abs x
+          _ -> __IMPOSSIBLE__
       | otherwise = rewriteAM (Eval stuck, ctrl)
       where
-        stuck = Closure (Value blk) (Def pf []) [] $ spliceSeq stack0 (Apply $ defaultArg arg) stack1
+        stuck = Closure (Value blk) (Def pf []) [] $ spliceStack stack0 (Apply $ defaultArg arg) stack1
         isWHNF u = case u of
           Lit{}      -> True
           Con{}      -> True
@@ -780,7 +831,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
             -- Catch-all
             catchallFrame = fcatchAllBranch bs =>? \ cc ->
-              runAM (Match f cl0 cc (spliceSeq stack0 (Apply $ Arg i cl) stack1), ctrl)
+              runAM (Match f cl0 cc (spliceStack stack0 (Apply $ Arg i cl) stack1), ctrl)
 
             -- Matching literal
             litFrame l = Map.lookup l (flitBranches bs) =>? \ cc ->
@@ -797,29 +848,29 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             -- Matching a literal against 'suc'
             litsucFrame n | n <= 0 = id
             litsucFrame n = fsucBranch bs =>? \ cc ->
-              runAM (Match f cl0 cc (spliceSeq stack0 n' stack1),
+              runAM (Match f cl0 cc (spliceStack stack0 n' stack1),
                      PatchMatch (patchSuc (fromJust suc) ConOSystem) : ctrlFallThrough)
-              where n' = Apply $ defaultArg $ valueNoBlk (Lit $! LitNat noRange $! n - 1) [] Seq.empty
+              where n' = Apply $ defaultArg $ valueNoBlk (Lit $! LitNat noRange $! n - 1) [] emptyStack
 
             -- Matching 'zero'
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
             zeroFrame _ = id
 
-            patchSuc c ci es = spliceSeq es0 (inc <$> arg) es1
-              where (es0, rest) = Seq.splitAt n es
+            patchSuc c ci es = spliceStack es0 (inc <$> arg) es1
+              where (es0, rest) = splitStack n es
                     arg :< es1  = viewl rest
-                    inc (Closure isV (Lit (LitNat r m)) _ _) = Closure isV (Lit $! LitNat r $! m + 1) [] Seq.empty
-                    inc t = valueNoBlk (Con c ci []) [] (Seq.singleton $ Apply $ defaultArg t)
+                    inc (Closure isV (Lit (LitNat r m)) _ _) = Closure isV (Lit $! LitNat r $! m + 1) [] emptyStack
+                    inc t = valueNoBlk (Con c ci []) [] (Apply (defaultArg t) <| emptyStack)
 
-            patchCon c ci ar es = spliceSeq es0 (Apply $ Arg i $ valueNoBlk (Con c ci []) [] es1) es2
-              where (es0, rest) = Seq.splitAt n es
-                    (es1, es2)  = Seq.splitAt ar rest
+            patchCon c ci ar es = spliceStack es0 (Apply $ Arg i $ valueNoBlk (Con c ci []) [] es1) es2
+              where (es0, rest) = splitStack n es
+                    (es1, es2)  = splitStack ar rest
       where
-        patchWild es = spliceSeq es0 (Apply $ Arg i cl) es1
-          where (es0, es1) = Seq.splitAt n es
+        patchWild es = spliceStack es0 (Apply $ Arg i cl) es1
+          where (es0, es1) = splitStack n es
 
         stuck = (StuckMatch f (setIsValue (Value blk') cl0) stack', ctrl)
-          where stack' = spliceSeq stack0 (Apply $ Arg i cl) stack1
+          where stack' = spliceStack stack0 (Apply $ Arg i cl) stack1
                 -- Compute new reason for being stuck. See
                 -- Agda.Syntax.Internal.stuckOn for the logic.
                 blk' = case blk of
@@ -833,7 +884,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             Nothing -> ctrl
             Just cc -> FallThrough cc : ctrl
 
-        stack' = spliceSeq stack0 (Apply $ Arg i cl) stack1
+        stack' = spliceStack stack0 (Apply $ Arg i cl) stack1
 
         nomatch = (Mismatch f cl0 stack', ctrl)
 
@@ -856,7 +907,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
         -- Split on nth elimination on the stack
         FCase n bs ->
-          case Seq.splitAt n stack of
+          case splitStack n stack of
             (stack0, st) -> case viewl st of
               -- If the nth elimination is not given, we're done
               EmptyL -> runAM (done Underapplied)
@@ -868,8 +919,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
                 case lookupCon p bs of
                   Nothing -> runAM (done $ StuckOn (Proj o p)) -- No case for the projection: stop
                   Just cc -> runAM (Match f cl0 cc (stack0 >< stack1), PatchMatch patchProj : ctrl)
-                where patchProj st = spliceSeq st0 e st1
-                        where (st0, st1) = Seq.splitAt n st
+                where patchProj st = spliceStack st0 e st1
+                        where (st0, st1) = splitStack n st
+              _ -> __IMPOSSIBLE__  -- coverage checker can't do pattern synonyms!
       where done why = (StuckMatch f (mkValue (NotBlocked why ()) cl0) stack, ctrl)
 
     evalClosure t env stack = Eval (Closure Unevaled t env stack)
@@ -885,7 +937,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     fallback :: AM -> Blocked Term
     fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure_ c, ctrl)
-      where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] Seq.empty
+      where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] emptyStack
     fallback _ = __IMPOSSIBLE__
 
     rewriteAM :: AM -> Blocked Term
@@ -894,9 +946,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       | null rewr = runAM s
       | otherwise = traceDoc (text "R" <+> pretty s) $
       case runReduce (rewrite blk v0 rewr es) of
-        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) [] Seq.empty, ctrl)
-        YesReduction _ v -> runAM (evalClosure v [] Seq.empty, ctrl)
-      where v0 = decodeClosure_ $ Closure Unevaled t env Seq.empty
+        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) [] emptyStack, ctrl)
+        YesReduction _ v -> runAM (evalClosure v [] emptyStack, ctrl)
+      where v0 = decodeClosure_ $ Closure Unevaled t env emptyStack
             es = toList $ (fmap . fmap) decodeClosure_ stack
             rewr = case t of
                      Def f []   -> rewriteRules f
@@ -915,7 +967,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           case viewl st of
             EmptyL        -> (xs0, env, st)
             Apply c :< st -> go xs st (unArg c : env)
-            _ :< _        -> __IMPOSSIBLE__
+            _             -> __IMPOSSIBLE__
 
     -- reduceB' :: Int -> Value -> Blocked Value
     -- reduceB' steps v =
