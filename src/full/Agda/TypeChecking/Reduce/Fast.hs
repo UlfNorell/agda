@@ -548,6 +548,7 @@ data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) 
                   | FallThrough FastCompiledClauses
                   | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
                   | UpdateThunk Pointer
+                  | DoApply Stack -- To allow thunk updates before elimination
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses Stack
@@ -585,6 +586,7 @@ instance Pretty ControlFrame where
                                                                  , nest 2 $ prettyList vs
                                                                  , nest 2 $ prettyList cls ]
   prettyPrec p UpdateThunk{} = text "UpdateThunk"
+  prettyPrec p (DoApply stack)           = mparens (p > 9) $ text "DoApply" <?> prettyList (toList stack)
 
 compile :: Term -> AM
 compile t = (Eval (Closure Unevaled t emptyEnv emptyStack), [])
@@ -711,8 +713,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             Nothing -> runAM (evalValue (notBlocked ()) (Var (x - envSize env) []) emptyEnv stack, ctrl)
             Just p  -> case derefPointer p of
               BlackHole -> __IMPOSSIBLE__
-              Thunk cl@(Closure Unevaled _ _ _) | isEmptyStack stack ->
-                blackHole p `seq` runAM (Eval cl, UpdateThunk p : ctrl)
+              Thunk cl@(Closure Unevaled _ _ _) ->
+                blackHole p `seq`
+                runAM (Eval cl, UpdateThunk p : [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
               Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
 
         MetaV m [] ->
@@ -795,6 +798,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     -- Thunk update
     runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk p : ctrl) =
       storePointer p cl `seq` runAM (Eval cl, ctrl)
+    runAM' (Eval cl@(Closure Value{} _ _ _), DoApply stack : ctrl) =
+      runAM (Eval (clApply cl stack), ctrl)
 
     -- Patching arguments on mismatch/stuck match
     runAM' (Mismatch f cl0 stack, PatchMatch patch : ctrl) =
@@ -924,6 +929,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             matchy NatSuc{}      = False
             matchy DoPrimOp{}    = False
             matchy UpdateThunk{} = False
+            matchy DoApply{}     = False
             (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
