@@ -607,7 +607,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
               | otherwise             -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
             CAxiom                    -> rewriteAM done
             CTyCon                    -> rewriteAM done
-            CCon{}                    -> __IMPOSSIBLE__
+            CCon{}                    -> runAM done   -- Only happens for builtinSharp (which is a Def when you bind it)
             COther                    -> fallback s
             CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
               runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
