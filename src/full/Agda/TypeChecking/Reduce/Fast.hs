@@ -650,18 +650,16 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       where done = (Eval $ mkValue (notBlocked ()) cl, ctrl)
 
     -- +k continuations
-    runAM' s@(Eval cl@(Closure Value{} t _ stack), NatSuc m : ctrl) =
+    runAM' (Eval cl@(Closure Value{} t _ stack), NatSuc m : ctrl) =
       case (t, stack) of
         (Lit (LitNat r n), []) ->
           runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] [], ctrl)
         _ -> runAM (Eval stuck, ctrl)
       where
         stuck = mkValue (notBlocked ()) $ plus m cl
-        -- TODO: optimised representation of sucⁿ t
         plus 0 cl = cl
-        plus n cl = valueNoBlk
-                            (Con (fromJust suc) ConOSystem [])
-                            [] [Apply $ defaultArg $ plus (n - 1) cl]
+        plus n cl = valueNoBlk (Con (fromJust suc) ConOSystem [])
+                               [] [Apply $ defaultArg $ plus (n - 1) cl]
 
     -- builtin functions
     runAM' (Eval (Closure _ (Lit a) _ []), DoPrimOp f op vs es cc : ctrl) =
@@ -683,7 +681,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         case stack1 of
           Apply k : stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) : stack')), ctrl)
           _ : _            -> __IMPOSSIBLE__
-          []               -> __IMPOSSIBLE__    -- TODO: need to build \ k -> k arg
+          []               -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
+                                                 [arg] [], ctrl)  -- Reduce to λ k → k arg
+            where lam x = Lam defaultArgInfo . Abs x
       | otherwise = runAM (Eval stuck, ctrl)
       where
         stuck = Closure (Value blk) (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
@@ -701,19 +701,25 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           Shared{}   -> __IMPOSSIBLE__
 
     -- Patching arguments on mismatch/stuck match
-    runAM' s@(Mismatch f cl0 stack, PatchMatch patch : ctrl) =
+    runAM' (Mismatch f cl0 stack, PatchMatch patch : ctrl) =
       runAM (Mismatch f cl0 (patch stack), ctrl)
-    runAM' s@(StuckMatch f cl0 stack, PatchMatch patch : ctrl) =
+    runAM' (StuckMatch f cl0 stack, PatchMatch patch : ctrl) =
       runAM (StuckMatch f cl0 (patch stack), ctrl)
 
     -- Fall-through handling
-    runAM' s@(Mismatch f cl0 stack, FallThrough cc : ctrl) =
+    runAM' (Mismatch f cl0 stack, FallThrough cc : ctrl) =
       runAM (Match f cl0 cc stack, ctrl)
-    runAM' s@(StuckMatch f cl0 stack, FallThrough{} : ctrl) =
+    runAM' (StuckMatch f cl0 stack, FallThrough{} : ctrl) =
       runAM (StuckMatch f cl0 stack, ctrl)
-    runAM' s@(Mismatch f cl0 stack, ctrl) =   -- TODO: fail unless f `elem` partialDefs
-      runAM (Eval (mkValue (NotBlocked MissingClauses ()) $ cl0 `clApply` stack), ctrl)
-
+    runAM' (Mismatch f cl0 stack, ctrl) = runAM s'
+      where
+        s' = runReduce $ do
+          pds <- getPartialDefs
+          if elem f pds then return (Eval (mkValue (NotBlocked MissingClauses ()) $ cl0 `clApply` stack), ctrl)
+                        else do
+            traceSLn "impossible" 10
+              ("Incomplete pattern matching when applying " ++ show f)
+              __IMPOSSIBLE__
 
     -- Recover from a stuck match
     runAM' (StuckMatch f cl0 stack, ctrl) = runAM (Eval (mkValue blk $ clApply cl0 stack), ctrl)
@@ -726,14 +732,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
-    runAM' s@(Eval cl@(Closure (Value blk) t env stack), DoCase f i cl0 bs n stack0 stack1 : ctrl) =
+    runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(DoCase f i cl0 bs n stack0 stack1 : ctrl)) =
       case blk of
         Blocked{}    -> runAM stuck
         NotBlocked{} -> case t of
           Con c ci [] | isSuc c -> sucFrame c ci $ catchallFrame $ runAM nomatch
           Con c ci [] -> conFrame c ci (length stack) $ catchallFrame $ runAM nomatch
 
-          Con{} -> __IMPOSSIBLE__ -- elims should have been shifted onto the stack
+          -- We can get here from a fallback (which builds a value without shifting args onto stack)
+          Con c ci es -> runAM (evalValue blk (Con c ci []) [] (elimsToStack env es ++ stack), ctrl0)
 
           -- Note: Literal natural number patterns are translated to suc-matches
           Lit (LitNat _ n) -> litsucFrame n $ zeroFrame n $ catchallFrame $ runAM nomatch
@@ -751,7 +758,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             catchallFrame = fcatchAllBranch bs =>? \ cc ->
               runAM (Match f cl0 cc (stack0 ++ [Apply $ Arg i cl] ++ stack1), ctrl)
 
-            -- Matching literal: TODO might fall through to constructor cases!
+            -- Matching literal
             litFrame l = Map.lookup l (flitBranches bs) =>? \ cc ->
               runAM (Match f cl0 cc (stack0 ++ stack1),
                      PatchMatch patchWild : ctrlFallThrough)
@@ -786,9 +793,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
           where (es0, es1) = splitAt n es
 
-        -- TODO: keeps the reason from the arg (old code used StuckOn elim for some cases..)
-        stuck = (StuckMatch f (setIsValue (Value blk) cl0) stack', ctrl)
+        stuck = (StuckMatch f (setIsValue (Value blk') cl0) stack', ctrl)
           where stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
+                -- Compute new reason for being stuck. See
+                -- Agda.Syntax.Internal.stuckOn for the logic.
+                blk' = case blk of
+                         Blocked{}        -> blk
+                         NotBlocked r _ -> NotBlocked (stuckOn elim r) ()
+                elim = Apply $ Arg i $ ignoreBlocking $ decodeClosure cl
 
         -- Push catch-all frame if there is a catch-all
         ctrlFallThrough =
@@ -800,7 +812,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
         nomatch = (Mismatch f cl0 stack', ctrl)
 
-    runAM' s@(Match f cl0 cc stack, ctrl) =
+    runAM' (Match f cl0 cc stack, ctrl) =
       case cc of
         -- impossible case
         FFail         -> runAM (StuckMatch f (mkValue (NotBlocked AbsurdMatch ()) cl0) stack, ctrl)
