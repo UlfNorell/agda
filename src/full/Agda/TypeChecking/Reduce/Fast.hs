@@ -604,6 +604,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     runAM' :: AM -> Blocked Term
     runAM' (Eval cl@(Closure Value{} _ _ _), []) = decodeClosure cl
     runAM' s@(Eval cl@(Closure Unevaled t env stack), !ctrl) = -- The strict match is important!
+      {-# SCC "runAM.Eval" #-}
       case t of
 
         Def f [] ->
@@ -762,6 +763,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     -- Pattern matching against a value
     runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(DoCase f i cl0 bs n stack0 stack1 : ctrl)) =
+      {-# SCC "runAM.DoCase" #-}
       case blk of
         Blocked{}    -> runAM stuck
         NotBlocked{} -> case t of
@@ -843,6 +845,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         nomatch = (Mismatch f cl0 stack', ctrl)
 
     runAM' (Match f cl0 cc stack, ctrl) =
+      {-# SCC "runAM.Match" #-}
       case cc of
         -- impossible case
         FFail         -> runAM (StuckMatch f (mkValue (NotBlocked AbsurdMatch ()) cl0) stack, ctrl)
