@@ -70,11 +70,14 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.List as List
 import Data.Traversable (traverse)
+import Data.Foldable (toList)
 import Data.Coerce
 
 import System.IO.Unsafe
 import Data.IORef
 import Data.Char
+import qualified Data.Sequence as Seq
+import Data.Sequence (Seq((:<|)), ViewL(..), viewl, (><), (<|))
 
 import Debug.Trace (trace)
 
@@ -471,12 +474,15 @@ lookupEnv :: Int -> Env -> Maybe Closure
 lookupEnv i e | i < length e = Just (e !! i)
               | otherwise    = Nothing
 
-type Stack = [Elim' Closure]
+type Stack = Seq (Elim' Closure)
 
 -- | Does not preserve 'IsValue'.
 clApply :: Closure -> Stack -> Closure
-clApply c                    []  = c
-clApply (Closure _ t env es) es' = Closure Unevaled t env (es ++ es')
+clApply c es' | Seq.null es' = c
+clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
+
+spliceSeq :: Seq a -> a -> Seq a -> Seq a
+spliceSeq s0 e s1 = s0 >< e <| s1
 
 type ControlStack = [ControlFrame]
 
@@ -499,7 +505,7 @@ instance Pretty Closure where
     mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
                            , nest 2 $ text "_" -- prettyList $ zipWith envEntry [0..] env
-                           , nest 2 $ prettyList stack ]
+                           , nest 2 $ prettyList (toList stack) ]
       where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
             tag = case isV of Value{} -> "V"; Unevaled -> "E"
 
@@ -511,7 +517,7 @@ instance Pretty Focus where
 
 instance Pretty ControlFrame where
   prettyPrec _ DoCase{}      = text "DoCase{}"
-  prettyPrec p (DoForce _ stack0 stack1)  = mparens (p > 9) $ text "DoForce" <?> prettyList (stack0 ++ stack1)
+  prettyPrec p (DoForce _ stack0 stack1)  = mparens (p > 9) $ text "DoForce" <?> prettyList (toList $ stack0 >< stack1)
   prettyPrec _ (NatSuc n)    = text ("+" ++ show n)
   prettyPrec _ PatchMatch{}  = text "PatchMatch{}"
   prettyPrec p FallThrough{} = text "FallThrough{}" -- mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
@@ -520,22 +526,24 @@ instance Pretty ControlFrame where
                                                                 , nest 2 $ prettyList cls ]
 
 compile :: Term -> AM
-compile t = (Eval (Closure Unevaled t [] []), [])
+compile t = (Eval (Closure Unevaled t [] Seq.empty), [])
 
 decodeClosure_ :: Closure -> Term
 decodeClosure_ = ignoreBlocking . decodeClosure
 
 decodeClosure :: Closure -> Blocked Term
-decodeClosure (Closure isV t [] st) = topMetaIsNotBlocked $ applyE t ((map . fmap) decodeClosure_ st) <$ b
+decodeClosure (Closure isV t [] st) = topMetaIsNotBlocked $
+  applyE t (toList $ (fmap . fmap) decodeClosure_ st) <$ b
   where b = case isV of Value b -> b; Unevaled -> notBlocked ()
 decodeClosure (Closure isV t e st)  = decodeClosure (Closure isV (applySubst rho t) [] st)
   where rho  = parS (map decodeClosure_ e)
         parS = foldr (:#) IdS  -- parallelS is too strict
 
 elimsToStack :: Env -> Elims -> Stack
-elimsToStack env es = seq (forceStack stack) stack
+elimsToStack env es = seq (forceStack closures) stack
   where
-    stack = (map . fmap) (mkClosure env) es
+    closures = (map . fmap) (mkClosure env) es
+    stack    = Seq.fromList closures
 
     -- Need to be strict in mkClosure to avoid memory leak
     forceStack = foldl (\ () -> forceEl) ()
@@ -544,9 +552,9 @@ elimsToStack env es = seq (forceStack stack) stack
 
     -- The Var case is crucial, the Def and Con makes little difference
     mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
-    mkClosure env t@(Def f [])   = Closure Unevaled t [] []
-    mkClosure env t@(Con c i []) = Closure Unevaled t [] []
-    mkClosure env t = Closure Unevaled t env []
+    mkClosure env t@(Def f [])   = Closure Unevaled t [] Seq.empty
+    mkClosure env t@(Con c i []) = Closure Unevaled t [] Seq.empty
+    mkClosure env t = Closure Unevaled t env Seq.empty
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
 reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile . traceDoc (text "-- fast reduce --")
@@ -604,15 +612,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           in case def of
             CFun{ cfunCompiled = cc }
               | dontUnfold            -> runAM done
-              | otherwise             -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
+              | otherwise             -> runAM (Match f (Closure Unevaled t [] Seq.empty) cc stack, ctrl)
             CAxiom                    -> rewriteAM done
             CTyCon                    -> rewriteAM done
             CCon{}                    -> runAM done   -- Only happens for builtinSharp (which is a Def when you bind it)
             COther                    -> fallback s
-            CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
+            CForce | (stack0, Apply v :<| stack1) <- Seq.splitAt 4 stack ->
               runAM (Eval (unArg v), DoForce f stack0 stack1 : ctrl)
             CForce -> runAM done
-            CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims stack ->
+            CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims (toList stack) ->
               runAM (Eval (unArg v), DoPrimOp f op [] (map unArg vs) cc : ctrl)
             CPrimOp{} -> runAM done  -- partially applied
 
@@ -621,16 +629,16 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           runAM (evalValueNoBlk (Lit (LitNat noRange 0)) [] stack, ctrl)
 
         -- Nat suc
-        Con c i [] | isSuc c, Apply v : stack' <- stack ->
+        Con c i [] | isSuc c, Apply v :<| stack' <- stack ->
           runAM (Eval (unArg v), sucCtrl ctrl)
 
         Con c i [] ->
-          case splitAt ar stack of
-            (args, Proj _ p : stack') -> runAM (Eval (clApply (unArg arg) stack'), ctrl)
+          case Seq.splitAt ar stack of
+            (args, Proj _ p :<| stack') -> runAM (Eval (clApply (unArg arg) stack'), ctrl)
               where
                 fields    = conFields c
                 Just n    = List.elemIndex p fields
-                Apply arg = args !! n
+                Apply arg = Seq.index args n
             _ -> rewriteAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
           where CCon{cconSrcCon = c', cconArity = ar} = cdefDef (constInfo (conName c))
 
@@ -650,57 +658,59 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Lit{} -> runAM done
         Pi{}  -> runAM done
 
-        Lam h (Abs _ b)
-          | Apply v : stack' <- stack -> runAM (evalClosure b (unArg v : env) stack', ctrl)
-        Lam h (NoAbs _ b)
-          | _ : stack' <- stack -> runAM (evalClosure b env stack', ctrl)
+        Lam h b ->
+          case viewl stack of
+            Apply v :< stack' ->
+              case b of
+                Abs   _ b -> runAM (evalClosure b (unArg v : env) stack', ctrl)
+                NoAbs _ b -> runAM (evalClosure b env stack', ctrl)
+            EmptyL -> runAM done
+            _ :< _ -> __IMPOSSIBLE__
 
-        Def f es   -> runAM (evalClosure (Def f [])   env $ elimsToStack env es ++ stack, ctrl)
-        Con c i es -> runAM (evalClosure (Con c i []) env $ elimsToStack env es ++ stack, ctrl)
-        Var x es   -> runAM (evalClosure (Var x [])   env $ elimsToStack env es ++ stack, ctrl)
-        MetaV m es -> runAM (evalClosure (MetaV m []) env $ elimsToStack env es ++ stack, ctrl)
+        Def f es   -> runAM (evalClosure (Def f [])   env $ elimsToStack env es >< stack, ctrl)
+        Con c i es -> runAM (evalClosure (Con c i []) env $ elimsToStack env es >< stack, ctrl)
+        Var x es   -> runAM (evalClosure (Var x [])   env $ elimsToStack env es >< stack, ctrl)
+        MetaV m es -> runAM (evalClosure (MetaV m []) env $ elimsToStack env es >< stack, ctrl)
 
         _ -> fallback s
       where done = (Eval $ mkValue (notBlocked ()) cl, ctrl)
 
     -- +k continuations
-    runAM' (Eval cl@(Closure Value{} t _ stack), NatSuc m : ctrl) =
-      case (t, stack) of
-        (Lit (LitNat r n), []) ->
-          runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] [], ctrl)
-        _ -> runAM (Eval stuck, ctrl)
+    runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSuc m : ctrl) =
+      runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) [] Seq.empty, ctrl)
+    runAM' (Eval cl, NatSuc m : ctrl) = runAM (Eval stuck, ctrl)
       where
         stuck = mkValue (notBlocked ()) $ plus m cl
         plus 0 cl = cl
         plus n cl = valueNoBlk (Con (fromJust suc) ConOSystem [])
-                               [] [Apply $ defaultArg $ plus (n - 1) cl]
+                               [] $ Seq.singleton $ Apply $ defaultArg $ plus (n - 1) cl
 
     -- builtin functions
-    runAM' (Eval (Closure _ (Lit a) _ []), DoPrimOp f op vs es cc : ctrl) =
+    runAM' (Eval (Closure _ (Lit a) _ _), DoPrimOp f op vs es cc : ctrl) =
       case es of
-        []      -> runAM (evalValueNoBlk (op (a : vs)) [] [], ctrl)
+        []      -> runAM (evalValueNoBlk (op (a : vs)) [] Seq.empty, ctrl)
         e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
     runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
         Nothing -> rewriteAM (Eval stuck, ctrl)                                       -- Not a literal and no clauses: stuck
-        Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
+        Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] Seq.empty) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
-        stack     = map (Apply . defaultArg) $ map litClos (reverse vs) ++ [cl] ++ es
-        litClos l = valueNoBlk (Lit l) [] []
+        stack     = fmap (Apply . defaultArg) $ spliceSeq (Seq.fromList (map litClos (reverse vs))) cl (Seq.fromList es)
+        litClos l = valueNoBlk (Lit l) [] Seq.empty
         stuck     = Closure (Value blk) (Def f []) [] stack
 
     -- primForce
     runAM' (Eval arg@(Closure (Value blk) t _ _), DoForce pf stack0 stack1 : ctrl)
       | isWHNF t =
-        case stack1 of
-          Apply k : stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) : stack')), ctrl)
-          _ : _            -> __IMPOSSIBLE__
-          []               -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
-                                                 [arg] [], ctrl)  -- Reduce to λ k → k arg
+        case viewl stack1 of
+          Apply k :< stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) <| stack')), ctrl)
+          _ :< _            -> __IMPOSSIBLE__
+          EmptyL            -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
+                                                  [arg] Seq.empty, ctrl)  -- Reduce to λ k → k arg
             where lam x = Lam defaultArgInfo . Abs x
       | otherwise = rewriteAM (Eval stuck, ctrl)
       where
-        stuck = Closure (Value blk) (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
+        stuck = Closure (Value blk) (Def pf []) [] $ spliceSeq stack0 (Apply $ defaultArg arg) stack1
         isWHNF u = case u of
           Lit{}      -> True
           Con{}      -> True
@@ -754,7 +764,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           Con c ci [] -> conFrame c ci (length stack) $ catchallFrame $ runAM nomatch
 
           -- We can get here from a fallback (which builds a value without shifting args onto stack)
-          Con c ci es -> runAM (evalValue blk (Con c ci []) [] (elimsToStack env es ++ stack), ctrl0)
+          Con c ci es -> runAM (evalValue blk (Con c ci []) [] (elimsToStack env es >< stack), ctrl0)
 
           -- Note: Literal natural number patterns are translated to suc-matches
           Lit (LitNat _ n) -> litsucFrame n $ zeroFrame n $ catchallFrame $ runAM nomatch
@@ -765,50 +775,51 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           where
             -- Matching constructor
             conFrame c ci ar = lookupCon (conName c) bs =>? \ cc ->
-              runAM (Match f cl0 cc (stack0 ++ stack ++ stack1),
+              runAM (Match f cl0 cc (stack0 >< stack >< stack1),
                      PatchMatch (patchCon c ci ar) : ctrlFallThrough)
 
             -- Catch-all
             catchallFrame = fcatchAllBranch bs =>? \ cc ->
-              runAM (Match f cl0 cc (stack0 ++ [Apply $ Arg i cl] ++ stack1), ctrl)
+              runAM (Match f cl0 cc (spliceSeq stack0 (Apply $ Arg i cl) stack1), ctrl)
 
             -- Matching literal
             litFrame l = Map.lookup l (flitBranches bs) =>? \ cc ->
-              runAM (Match f cl0 cc (stack0 ++ stack1),
+              runAM (Match f cl0 cc (stack0 >< stack1),
                      PatchMatch patchWild : ctrlFallThrough)
 
             -- Matching a constructor against 'suc'
             sucFrame c ci | isSuc c =
               fsucBranch bs =>? \ cc ->
-                runAM (Match f cl0 cc (stack0 ++ stack ++ stack1),
+                runAM (Match f cl0 cc (stack0 >< stack >< stack1),
                        PatchMatch (patchSuc c ci) : ctrlFallThrough)
             sucFrame _ _ = id
 
             -- Matching a literal against 'suc'
             litsucFrame n | n <= 0 = id
             litsucFrame n = fsucBranch bs =>? \ cc ->
-              runAM (Match f cl0 cc (stack0 ++ [n'] ++ stack1),
+              runAM (Match f cl0 cc (spliceSeq stack0 n' stack1),
                      PatchMatch (patchSuc (fromJust suc) ConOSystem) : ctrlFallThrough)
-              where n' = Apply $ defaultArg $ valueNoBlk (Lit $! LitNat noRange $! n - 1) [] []
+              where n' = Apply $ defaultArg $ valueNoBlk (Lit $! LitNat noRange $! n - 1) [] Seq.empty
 
             -- Matching 'zero'
             zeroFrame n | n == 0, Just z <- zero = conFrame z ConOSystem 0
             zeroFrame _ = id
 
-            patchSuc c ci es = es0 ++ [inc <$> arg] ++ es1
-              where (es0, arg : es1) = splitAt n es
-                    inc (Closure isV (Lit (LitNat r m)) _ []) = Closure isV (Lit $! LitNat r $! m + 1) [] []
-                    inc t = valueNoBlk (Con c ci []) [] [Apply $ defaultArg t]
+            patchSuc c ci es = spliceSeq es0 (inc <$> arg) es1
+              where (es0, rest) = Seq.splitAt n es
+                    arg :< es1  = viewl rest
+                    inc (Closure isV (Lit (LitNat r m)) _ _) = Closure isV (Lit $! LitNat r $! m + 1) [] Seq.empty
+                    inc t = valueNoBlk (Con c ci []) [] (Seq.singleton $ Apply $ defaultArg t)
 
-            patchCon c ci ar es = es0 ++ [Apply $ Arg i $ valueNoBlk (Con c ci []) [] es1] ++ es2
-              where (es0, rest) = splitAt n es
-                    (es1, es2)  = splitAt ar rest
+            patchCon c ci ar es = spliceSeq es0 (Apply $ Arg i $ valueNoBlk (Con c ci []) [] es1) es2
+              where (es0, rest) = Seq.splitAt n es
+                    (es1, es2)  = Seq.splitAt ar rest
       where
-        patchWild es = es0 ++ [Apply $ Arg i cl] ++ es1
-          where (es0, es1) = splitAt n es
+        patchWild es = spliceSeq es0 (Apply $ Arg i cl) es1
+          where (es0, es1) = Seq.splitAt n es
 
         stuck = (StuckMatch f (setIsValue (Value blk') cl0) stack', ctrl)
-          where stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
+          where stack' = spliceSeq stack0 (Apply $ Arg i cl) stack1
                 -- Compute new reason for being stuck. See
                 -- Agda.Syntax.Internal.stuckOn for the logic.
                 blk' = case blk of
@@ -822,7 +833,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             Nothing -> ctrl
             Just cc -> FallThrough cc : ctrl
 
-        stack' = stack0 ++ [Apply $ Arg i cl] ++ stack1
+        stack' = spliceSeq stack0 (Apply $ Arg i cl) stack1
 
         nomatch = (Mismatch f cl0 stack', ctrl)
 
@@ -845,19 +856,20 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
         -- Split on nth elimination on the stack
         FCase n bs ->
-          case splitAt n stack of
-            -- If the nth elimination is not given, we're done
-            (_, []) -> runAM (done Underapplied)
-            -- apply elim: push the current match on the control stack and
-            -- evaluate the argument
-            (stack0, Apply e : stack1) -> runAM (Eval (unArg e), DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl)
-            -- projection elim
-            (stack0, e@(Proj o p) : stack1) ->
-              case lookupCon p bs of
-                Nothing -> runAM (done $ StuckOn (Proj o p)) -- No case for the projection: stop
-                Just cc -> runAM (Match f cl0 cc (stack0 ++ stack1), PatchMatch patchProj : ctrl)
-              where patchProj st = st0 ++ [e] ++ st1
-                      where (st0, st1) = splitAt n st
+          case Seq.splitAt n stack of
+            (stack0, st) -> case viewl st of
+              -- If the nth elimination is not given, we're done
+              EmptyL -> runAM (done Underapplied)
+              -- apply elim: push the current match on the control stack and
+              -- evaluate the argument
+              Apply e :< stack1 -> runAM (Eval (unArg e), DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl)
+              -- projection elim
+              e@(Proj o p) :< stack1 ->
+                case lookupCon p bs of
+                  Nothing -> runAM (done $ StuckOn (Proj o p)) -- No case for the projection: stop
+                  Just cc -> runAM (Match f cl0 cc (stack0 >< stack1), PatchMatch patchProj : ctrl)
+                where patchProj st = spliceSeq st0 e st1
+                        where (st0, st1) = Seq.splitAt n st
       where done why = (StuckMatch f (mkValue (NotBlocked why ()) cl0) stack, ctrl)
 
     evalClosure t env stack = Eval (Closure Unevaled t env stack)
@@ -873,7 +885,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     fallback :: AM -> Blocked Term
     fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure_ c, ctrl)
-      where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] []
+      where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] Seq.empty
     fallback _ = __IMPOSSIBLE__
 
     rewriteAM :: AM -> Blocked Term
@@ -882,10 +894,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       | null rewr = runAM s
       | otherwise = traceDoc (text "R" <+> pretty s) $
       case runReduce (rewrite blk v0 rewr es) of
-        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) [] [], ctrl)
-        YesReduction _ v -> runAM (evalClosure v [] [], ctrl)
-      where v0 = decodeClosure_ $ Closure Unevaled t env []
-            es = (map . fmap) decodeClosure_ stack
+        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) [] Seq.empty, ctrl)
+        YesReduction _ v -> runAM (evalClosure v [] Seq.empty, ctrl)
+      where v0 = decodeClosure_ $ Closure Unevaled t env Seq.empty
+            es = toList $ (fmap . fmap) decodeClosure_ stack
             rewr = case t of
                      Def f []   -> rewriteRules f
                      Con c _ [] -> rewriteRules (conName c)
@@ -898,10 +910,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     buildEnv :: [Arg String] -> Stack -> ([Arg String], Env, Stack)
     buildEnv xs stack = go xs stack []
       where
-        go xs       []             env = (xs, env, [])
-        go []       st             env = ([], env, st)
-        go (x : xs) (Apply c : st) env = go xs st (unArg c : env)
-        go (_ : _)  (_ : _)        _   = __IMPOSSIBLE__
+        go [] st env = ([], env, st)
+        go xs0@(x : xs) st env =
+          case viewl st of
+            EmptyL        -> (xs0, env, st)
+            Apply c :< st -> go xs st (unArg c : env)
+            _ :< _        -> __IMPOSSIBLE__
 
     -- reduceB' :: Int -> Value -> Blocked Value
     -- reduceB' steps v =
