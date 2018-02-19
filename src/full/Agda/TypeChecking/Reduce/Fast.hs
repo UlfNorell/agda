@@ -464,6 +464,9 @@ emptyEnv = []
 isEmptyEnv :: Env -> Bool
 isEmptyEnv = null
 
+envSize :: Env -> Int
+envSize = length
+
 envToList :: Env -> [Closure]
 envToList = map derefPointer_
 
@@ -474,8 +477,9 @@ extendEnv cl env = seq p (p : env)
   where p = newPointer cl
 
 lookupEnv :: Int -> Env -> Maybe Pointer
-lookupEnv _ [] = Nothing    -- We can have unbound variables only at the top-level
-lookupEnv i e  = Just (e !! i)
+lookupEnv i e | i < n     = Just (e !! i)
+              | otherwise = Nothing
+  where n = length e
 
 -- End of Env API
 
@@ -704,7 +708,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
         Var x []   ->
           case lookupEnv x env of
-            Nothing -> runAM done
+            Nothing -> runAM (evalValue (notBlocked ()) (Var (x - envSize env) []) emptyEnv stack, ctrl)
             Just p  -> case derefPointer p of
               BlackHole -> __IMPOSSIBLE__
               Thunk cl@(Closure Unevaled _ _ _) | isEmptyStack stack ->
