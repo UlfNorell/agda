@@ -455,7 +455,7 @@ topMetaIsNotBlocked :: Blocked Term -> Blocked Term
 topMetaIsNotBlocked (Blocked _ t@MetaV{}) = notBlocked t
 topMetaIsNotBlocked b = b
 
-data IsValue = Value (Blocked ())
+data IsValue = Value Blocked_
              | Unevaled
 
 data Closure = Closure IsValue Term Env Stack  -- Env applied to the Term (the stack contains closures)
@@ -522,11 +522,14 @@ instance Pretty ControlFrame where
 compile :: Term -> AM
 compile t = (Eval (Closure Unevaled t [] []), [])
 
+decodeClosure_ :: Closure -> Term
+decodeClosure_ = ignoreBlocking . decodeClosure
+
 decodeClosure :: Closure -> Blocked Term
-decodeClosure (Closure isV t [] st) = applyE t ((map . fmap) (ignoreBlocking . decodeClosure) st) <$ b
+decodeClosure (Closure isV t [] st) = applyE t ((map . fmap) decodeClosure_ st) <$ b
   where b = case isV of Value b -> b; Unevaled -> notBlocked ()
 decodeClosure (Closure isV t e st)  = decodeClosure (Closure isV (applySubst rho t) [] st)
-  where rho  = parS (map (ignoreBlocking . decodeClosure) e)
+  where rho  = parS (map decodeClosure_ e)
         parS = foldr (:#) IdS  -- parallelS is too strict
 
 elimsToStack :: Env -> Elims -> Stack
@@ -574,6 +577,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         CTyCon -> True
         _      -> False
 
+    rewriteRules f = cdefRewriteRules (constInfo f)
+
     hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
 
     traceDoc
@@ -591,8 +596,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Def f [] ->
           case cdefDef (constInfo f) of
             CFun{ cfunCompiled = cc } -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
-            CAxiom                    -> runAM done
-            CTyCon                    -> runAM done
+            CAxiom                    -> rewriteAM done
+            CTyCon                    -> rewriteAM done
             CCon{}                    -> __IMPOSSIBLE__
             COther                    -> fallback s
             CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
@@ -617,7 +622,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
                 fields    = conFields c
                 Just n    = List.elemIndex p fields
                 Apply arg = args !! n
-            _ -> runAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
+            _ -> rewriteAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
           where CCon{cconSrcCon = c', cconArity = ar} = cdefDef (constInfo (conName c))
 
         Var x []   ->
@@ -668,7 +673,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         e : es' -> runAM (Eval e, DoPrimOp f op (a : vs) es' cc : ctrl)
     runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
-        Nothing -> runAM (Eval stuck, ctrl)                                           -- Not a literal and no clauses: stuck
+        Nothing -> rewriteAM (Eval stuck, ctrl)                                       -- Not a literal and no clauses: stuck
         Just cc -> runAM (Match f (Closure Unevaled (Def f []) [] []) cc stack, ctrl) -- otherwise try the clauses on non-literal
       where
         stack     = map (Apply . defaultArg) $ map litClos (reverse vs) ++ [cl] ++ es
@@ -684,7 +689,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           []               -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
                                                  [arg] [], ctrl)  -- Reduce to λ k → k arg
             where lam x = Lam defaultArgInfo . Abs x
-      | otherwise = runAM (Eval stuck, ctrl)
+      | otherwise = rewriteAM (Eval stuck, ctrl)
       where
         stuck = Closure (Value blk) (Def pf []) [] $ stack0 ++ [Apply $ defaultArg arg] ++ stack1
         isWHNF u = case u of
@@ -711,7 +716,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       runAM (Match f cl0 cc stack, ctrl)
     runAM' (StuckMatch f cl0 stack, FallThrough{} : ctrl) =
       runAM (StuckMatch f cl0 stack, ctrl)
-    runAM' (Mismatch f cl0 stack, ctrl) = runAM s'
+    runAM' (Mismatch f cl0 stack, ctrl) = rewriteAM s'
       where
         s' = runReduce $ do
           pds <- getPartialDefs
@@ -722,7 +727,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
               __IMPOSSIBLE__
 
     -- Recover from a stuck match
-    runAM' (StuckMatch f cl0 stack, ctrl) = runAM (Eval (mkValue blk $ clApply cl0 stack), ctrl)
+    runAM' (StuckMatch f cl0 stack, ctrl) = rewriteAM (Eval (mkValue blk $ clApply cl0 stack), ctrl)
       where Value blk = isValue cl0 -- cl0 should be a Value or we'd loop
 
     -- Impossible cases (we clean up FallThrough and PatchMatch frames before returning from a case)
@@ -800,7 +805,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
                 blk' = case blk of
                          Blocked{}        -> blk
                          NotBlocked r _ -> NotBlocked (stuckOn elim r) ()
-                elim = Apply $ Arg i $ ignoreBlocking $ decodeClosure cl
+                elim = Apply $ Arg i $ decodeClosure_ cl
 
         -- Push catch-all frame if there is a catch-all
         ctrlFallThrough =
@@ -858,9 +863,25 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     (m =>? f) z = maybe z f m
 
     fallback :: AM -> Blocked Term
-    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ ignoreBlocking $ decodeClosure c, ctrl)
+    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure_ c, ctrl)
       where mkValue b = evalValue (() <$ b) (ignoreBlocking b) [] []
     fallback _ = __IMPOSSIBLE__
+
+    rewriteAM :: AM -> Blocked Term
+    rewriteAM s | not hasRewriting = runAM s
+    rewriteAM s@(Eval (Closure (Value blk) t env stack), ctrl)
+      | null rewr = runAM s
+      | otherwise = traceDoc (text "R" <+> pretty s) $
+      case runReduce (rewrite blk v0 rewr es) of
+        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) [] [], ctrl)
+        YesReduction _ v -> runAM (evalClosure v [] [], ctrl)
+      where v0 = decodeClosure_ $ Closure Unevaled t env []
+            es = (map . fmap) decodeClosure_ stack
+            rewr = case t of
+                     Def f []   -> rewriteRules f
+                     Con c _ [] -> rewriteRules (conName c)
+                     _          -> __IMPOSSIBLE__
+    rewriteAM _ = __IMPOSSIBLE__
 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
