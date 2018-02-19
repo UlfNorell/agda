@@ -73,7 +73,7 @@ import Data.Traversable (traverse)
 import Data.Foldable (toList)
 import Data.Coerce
 
-import System.IO.Unsafe
+import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef
 import Data.Char
 import qualified Data.Sequence as Seq
@@ -428,7 +428,33 @@ isValue (Closure isV _ _ _) = isV
 setIsValue :: IsValue -> Closure -> Closure
 setIsValue isV (Closure _ t env stack) = Closure isV t env stack
 
-type Env = [Closure]
+type Env = [Pointer]
+
+-- TODO: STRef
+type Pointer = IORef Thunk
+data Thunk = BlackHole | Thunk Closure
+
+{-# NOINLINE newPointer #-}
+newPointer :: Closure -> Pointer
+newPointer cl = unsafePerformIO (newIORef (Thunk cl))
+
+{-# NOINLINE derefPointer_ #-}
+derefPointer_ :: Pointer -> Closure
+derefPointer_ ptr = unsafePerformIO $ do
+  Thunk cl <- readIORef ptr
+  return cl
+
+{-# NOINLINE derefPointer #-}
+derefPointer :: Pointer -> Thunk
+derefPointer ptr = unsafePerformIO $ readIORef ptr
+
+{-# NOINLINE storePointer #-}
+storePointer :: Pointer -> Closure -> ()
+storePointer ptr cl = unsafePerformIO (writeIORef ptr (Thunk cl))
+
+{-# NOINLINE blackHole #-}
+blackHole :: Pointer -> ()
+blackHole ptr = unsafePerformIO (writeIORef ptr BlackHole)
 
 -- "Abstract" interface to environments
 
@@ -439,15 +465,15 @@ isEmptyEnv :: Env -> Bool
 isEmptyEnv = null
 
 envToList :: Env -> [Closure]
-envToList = id
-
-envFromList :: [Closure] -> Env
-envFromList = id
+envToList = map derefPointer_
 
 extendEnv :: Closure -> Env -> Env
-extendEnv = (:)
+extendEnv (Closure _ (Var x []) env' stack) env
+  | isEmptyStack stack, Just p <- lookupEnv x env' = p : env
+extendEnv cl env = seq p (p : env)
+  where p = newPointer cl
 
-lookupEnv :: Int -> Env -> Maybe Closure
+lookupEnv :: Int -> Env -> Maybe Pointer
 lookupEnv _ [] = Nothing    -- We can have unbound variables only at the top-level
 lookupEnv i e  = Just (e !! i)
 
@@ -517,6 +543,7 @@ data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) 
                   | PatchMatch (Stack -> Stack)
                   | FallThrough FastCompiledClauses
                   | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
+                  | UpdateThunk Pointer
 
 data Focus = Eval Closure
            | Match QName Closure FastCompiledClauses Stack
@@ -525,13 +552,17 @@ data Focus = Eval Closure
 
 type AM = (Focus, ControlStack)
 
+instance Pretty Thunk where
+  prettyPrec _ BlackHole  = text "<BLACKHOLE>"
+  prettyPrec p (Thunk cl) = prettyPrec p cl
+
 instance Pretty Closure where
   prettyPrec p (Closure isV t env stack) =
     mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
-                           , nest 2 $ text "_" -- prettyList $ zipWith envEntry [0..] env
+                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
                            , nest 2 $ prettyList (toList stack) ]
-      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
+      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty (derefPointer c)
             tag = case isV of Value{} -> "V"; Unevaled -> "E"
 
 instance Pretty Focus where
@@ -541,14 +572,15 @@ instance Pretty Focus where
   prettyPrec p (StuckMatch _ cl st) = mparens (p > 9) $ text "B" <?> prettyPrec 10 (clApply cl st)
 
 instance Pretty ControlFrame where
-  prettyPrec _ DoCase{}      = text "DoCase{}"
-  prettyPrec p (DoForce _ stack0 stack1)  = mparens (p > 9) $ text "DoForce" <?> prettyList (toList $ stack0 >< stack1)
-  prettyPrec _ (NatSuc n)    = text ("+" ++ show n)
-  prettyPrec _ PatchMatch{}  = text "PatchMatch{}"
-  prettyPrec p FallThrough{} = text "FallThrough{}" -- mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
-  prettyPrec p (DoPrimOp f _ vs cls _) = mparens (p > 9) $ sep [ text "DoPrimOp" <+> pretty f
-                                                                , nest 2 $ prettyList vs
-                                                                , nest 2 $ prettyList cls ]
+  prettyPrec p (DoCase f _ _ _ _ _ _)    = mparens (p > 9) $ text "DoCase" <+> text (show $ qnameName f)
+  prettyPrec p (DoForce _ stack0 stack1) = mparens (p > 9) $ text "DoForce" <?> prettyList (toList $ stack0 >< stack1)
+  prettyPrec _ (NatSuc n)                = text ("+" ++ show n)
+  prettyPrec _ PatchMatch{}              = text "PatchMatch"
+  prettyPrec p FallThrough{}             = text "FallThrough" -- mparens (p > 9) $ (text "FallThrough" <?> prettyList stack) <?> prettyPrec 10 cc
+  prettyPrec p (DoPrimOp f _ vs cls _)   = mparens (p > 9) $ sep [ text "DoPrimOp" <+> pretty f
+                                                                 , nest 2 $ prettyList vs
+                                                                 , nest 2 $ prettyList cls ]
+  prettyPrec p UpdateThunk{} = text "UpdateThunk"
 
 compile :: Term -> AM
 compile t = (Eval (Closure Unevaled t emptyEnv emptyStack), [])
@@ -577,9 +609,10 @@ elimsToStack env es = seq (forceStack closures) stack
     forceEl _ = ()
 
     -- The Var case is crucial, the Def and Con makes little difference
-    mkClosure env (Var x es) | Just c <- lookupEnv x env = clApply c (elimsToStack env es)
-    mkClosure env t@(Def f [])   = Closure Unevaled t emptyEnv emptyStack
-    mkClosure env t@(Con c i []) = Closure Unevaled t emptyEnv emptyStack
+    -- Var case breaks sharing though!
+    -- mkClosure env (Var x es) | Just p <- lookupEnv x env = clApply (derefPointer_ p) (elimsToStack env es)
+    mkClosure _ t@(Def f [])   = Closure Unevaled t emptyEnv emptyStack
+    mkClosure _ t@(Con c i []) = Closure Unevaled t emptyEnv emptyStack
     mkClosure env t = Closure Unevaled t env emptyStack
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
@@ -672,7 +705,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Var x []   ->
           case lookupEnv x env of
             Nothing -> runAM done
-            Just cl -> runAM (Eval (clApply cl stack), ctrl)
+            Just p  -> case derefPointer p of
+              BlackHole -> __IMPOSSIBLE__
+              Thunk cl@(Closure Unevaled _ _ _) | isEmptyStack stack ->
+                blackHole p `seq` runAM (Eval cl, UpdateThunk p : ctrl)
+              Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
 
         MetaV m [] ->
           case mvInstantiation <$> Map.lookup m metaStore of
@@ -750,6 +787,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           Var{}      -> False
           Def q _    -> isTyCon q
           Shared{}   -> __IMPOSSIBLE__
+
+    -- Thunk update
+    runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk p : ctrl) =
+      storePointer p cl `seq` runAM (Eval cl, ctrl)
 
     -- Patching arguments on mismatch/stuck match
     runAM' (Mismatch f cl0 stack, PatchMatch patch : ctrl) =
@@ -878,6 +919,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             matchy DoForce{}     = False
             matchy NatSuc{}      = False
             matchy DoPrimOp{}    = False
+            matchy UpdateThunk{} = False
             (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
