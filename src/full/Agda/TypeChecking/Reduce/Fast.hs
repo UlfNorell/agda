@@ -594,8 +594,17 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       case t of
 
         Def f [] ->
-          case cdefDef (constInfo f) of
-            CFun{ cfunCompiled = cc } -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
+          let CompactDef{ cdefDelayed        = delayed
+                        , cdefNonterminating = nonterm
+                        , cdefDef            = def } = constInfo f
+              unfoldDelayed | DoCase{} : _ <- ctrl = True   -- only unfold delayed if there's a match on the stack
+                            | otherwise            = False
+              dontUnfold = (nonterm && not allowNonTerminating) ||
+                           (delayed && not unfoldDelayed)
+          in case def of
+            CFun{ cfunCompiled = cc }
+              | dontUnfold            -> runAM done
+              | otherwise             -> runAM (Match f (Closure Unevaled t [] []) cc stack, ctrl)
             CAxiom                    -> rewriteAM done
             CTyCon                    -> rewriteAM done
             CCon{}                    -> __IMPOSSIBLE__
