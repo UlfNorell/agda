@@ -526,7 +526,7 @@ decodeClosure_ :: Closure -> Term
 decodeClosure_ = ignoreBlocking . decodeClosure
 
 decodeClosure :: Closure -> Blocked Term
-decodeClosure (Closure isV t [] st) = applyE t ((map . fmap) decodeClosure_ st) <$ b
+decodeClosure (Closure isV t [] st) = topMetaIsNotBlocked $ applyE t ((map . fmap) decodeClosure_ st) <$ b
   where b = case isV of Value b -> b; Unevaled -> notBlocked ()
 decodeClosure (Closure isV t e st)  = decodeClosure (Closure isV (applySubst rho t) [] st)
   where rho  = parS (map decodeClosure_ e)
