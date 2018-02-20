@@ -997,13 +997,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     -- When matching is stuck we find the 'EndCase' frame on the control stack
     -- and return it with the appropriate 'IsValue' set.
     unwindStuckCase :: Blocked_ -> ControlStack s -> ST s (Blocked Term)
-    unwindStuckCase blk (EndCase _ cl  : ctrl) = runAM (Eval (mkValue blk cl), ctrl)
+    unwindStuckCase blk (EndCase _ cl  : ctrl) = rewriteAM (Eval (mkValue blk cl), ctrl)
     unwindStuckCase blk (FallThrough{} : ctrl) = unwindStuckCase blk ctrl
     unwindStuckCase _ _ = __IMPOSSIBLE__
 
     rewriteAM :: AM s -> ST s (Blocked Term)
-    rewriteAM s | not hasRewriting = runAM s
-    rewriteAM s@(Eval (Closure (Value blk) t env stack), ctrl)
+    rewriteAM = if hasRewriting then rewriteAM' else runAM
+
+    rewriteAM' :: AM s -> ST s (Blocked Term)
+    rewriteAM' s@(Eval (Closure (Value blk) t env stack), ctrl)
       | null rewr = runAM s
       | otherwise = traceDoc (text "R" <+> pretty s) $ do
         v0 <- decodeClosure_ (Closure Unevaled t env emptyStack)
@@ -1015,7 +1017,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                      Def f []   -> rewriteRules f
                      Con c _ [] -> rewriteRules (conName c)
                      _          -> __IMPOSSIBLE__
-    rewriteAM _ = __IMPOSSIBLE__
+    rewriteAM' _ =
+      __IMPOSSIBLE__
 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
