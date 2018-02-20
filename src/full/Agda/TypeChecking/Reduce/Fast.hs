@@ -65,6 +65,8 @@ module Agda.TypeChecking.Reduce.Fast
   ( fastReduce ) where
 
 import Control.Monad.Reader
+import Control.Monad.ST
+import Control.Monad.ST.Unsafe
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -75,6 +77,7 @@ import Data.Coerce
 
 import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef
+import Data.STRef
 import Data.Char
 import qualified Data.Sequence as Seq
 
@@ -420,70 +423,66 @@ topMetaIsNotBlocked b = b
 data IsValue = Value Blocked_
              | Unevaled
 
-data Closure = Closure IsValue Term Env Stack  -- Env applied to the Term (the stack contains closures)
+data Closure s = Closure IsValue Term (Env s) (Stack s)  -- Env applied to the Term (the stack contains closures)
 
-isValue :: Closure -> IsValue
+isValue :: Closure s -> IsValue
 isValue (Closure isV _ _ _) = isV
 
-setIsValue :: IsValue -> Closure -> Closure
+setIsValue :: IsValue -> Closure s -> Closure s
 setIsValue isV (Closure _ t env stack) = Closure isV t env stack
 
-type Env = [Pointer]
+type Env s = [Pointer s]
 
 -- TODO: STRef
-type Pointer = IORef Thunk
-data Thunk = BlackHole | Thunk Closure
+type Pointer s = STRef s (Thunk (Closure s))
 
-{-# NOINLINE newPointer #-}
-newPointer :: Closure -> Pointer
-newPointer cl = unsafePerformIO (newIORef (Thunk cl))
+data Thunk a = BlackHole | Thunk a
+  deriving (Functor)
 
-{-# NOINLINE derefPointer_ #-}
-derefPointer_ :: Pointer -> Closure
-derefPointer_ ptr = unsafePerformIO $ do
-  Thunk cl <- readIORef ptr
+newPointer :: Closure s -> ST s (Pointer s)
+newPointer cl = newSTRef (Thunk cl)
+
+derefPointer :: Pointer s -> ST s (Thunk (Closure s))
+derefPointer ptr = readSTRef ptr
+
+derefPointer_ :: Pointer s -> ST s (Closure s)
+derefPointer_ ptr = do
+  Thunk cl <- derefPointer ptr
   return cl
 
-{-# NOINLINE derefPointer #-}
-derefPointer :: Pointer -> Thunk
-derefPointer ptr = unsafePerformIO $ readIORef ptr
+storePointer :: Pointer s -> Closure s -> ST s ()
+storePointer ptr cl = writeSTRef ptr (Thunk cl)
 
-{-# NOINLINE storePointer #-}
-storePointer :: Pointer -> Closure -> ()
-storePointer ptr cl = unsafePerformIO (writeIORef ptr (Thunk cl))
-
-{-# NOINLINE blackHole #-}
-blackHole :: Pointer -> ()
-blackHole ptr = unsafePerformIO (writeIORef ptr BlackHole)
+blackHole :: Pointer s -> ST s ()
+blackHole ptr = writeSTRef ptr BlackHole
 
 -- "Abstract" interface to environments
 
-emptyEnv :: Env
+emptyEnv :: Env s
 emptyEnv = []
 
-isEmptyEnv :: Env -> Bool
+isEmptyEnv :: Env s -> Bool
 isEmptyEnv = null
 
-envSize :: Env -> Int
+envSize :: Env s -> Int
 envSize = length
 
-envToList :: Env -> [Closure]
-envToList = map derefPointer_
+envToList :: Env s -> ST s [Closure s]
+envToList = mapM derefPointer_
 
-extendEnv :: Closure -> Env -> Env
+extendEnv :: Closure s -> Env s -> ST s (Env s)
 extendEnv (Closure _ (Var x []) env' stack) env
-  | isEmptyStack stack, Just p <- lookupEnv x env' = p : env
-extendEnv cl env = seq p (p : env)
-  where p = newPointer cl
+  | isEmptyStack stack, Just p <- lookupEnv x env' = return (p : env)
+extendEnv cl env = (: env) <$> newPointer cl
 
-lookupEnv :: Int -> Env -> Maybe Pointer
+lookupEnv :: Int -> Env s -> Maybe (Pointer s)
 lookupEnv i e | i < n     = Just (e !! i)
               | otherwise = Nothing
   where n = length e
 
 -- End of Env API
 
-type Stack = StackC (Elim' Closure)
+type Stack s = StackC (Elim' (Closure s))
 
 -- "Abstract" interface to stacks. Change StackC and the functions below to
 -- change the representation of stacks.
@@ -532,51 +531,51 @@ indexStack = (!!)
 -- End of stack API --
 
 -- | Does not preserve 'IsValue'.
-clApply :: Closure -> Stack -> Closure
+clApply :: Closure s -> Stack s -> Closure s
 clApply c es' | isEmptyStack es' = c
 clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
 spliceStack :: StackC a -> a -> StackC a -> StackC a
 spliceStack s0 e s1 = s0 >< e <| s1
 
-type ControlStack = [ControlFrame]
+type ControlStack s = [ControlFrame s]
 
-data ControlFrame = DoCase QName ArgInfo Closure (FastCase FastCompiledClauses) Int Stack Stack
-                  | DoForce QName Stack Stack
-                  | NatSuc Integer
-                  | PatchMatch (Stack -> Stack)
-                  | FallThrough FastCompiledClauses
-                  | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure] (Maybe FastCompiledClauses)
-                  | UpdateThunk Pointer
-                  | DoApply Stack -- To allow thunk updates before elimination
+data ControlFrame s = DoCase QName ArgInfo (Closure s) (FastCase FastCompiledClauses) Int (Stack s) (Stack s)
+                    | DoForce QName (Stack s) (Stack s)
+                    | NatSuc Integer
+                    | PatchMatch (Stack s -> Stack s)
+                    | FallThrough FastCompiledClauses
+                    | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure s] (Maybe FastCompiledClauses)
+                    | UpdateThunk (Pointer s)
+                    | DoApply (Stack s) -- To allow thunk updates before elimination
 
-data Focus = Eval Closure
-           | Match QName Closure FastCompiledClauses Stack
-           | Mismatch QName Closure Stack
-           | StuckMatch QName Closure Stack
+data Focus s = Eval (Closure s)
+             | Match QName (Closure s) FastCompiledClauses (Stack s)
+             | Mismatch QName (Closure s) (Stack s)
+             | StuckMatch QName (Closure s) (Stack s)
 
-type AM = (Focus, ControlStack)
+type AM s = (Focus s, ControlStack s)
 
-instance Pretty Thunk where
+instance Pretty a => Pretty (Thunk a) where
   prettyPrec _ BlackHole  = text "<BLACKHOLE>"
   prettyPrec p (Thunk cl) = prettyPrec p cl
 
-instance Pretty Closure where
+instance Pretty (Closure s) where
   prettyPrec p (Closure isV t env stack) =
     mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
-                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
+                           , nest 2 $ text "_" -- prettyList $ zipWith envEntry [0..] env
                            , nest 2 $ prettyList (toList stack) ]
-      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty (derefPointer c)
+      where -- envEntry i c = text ("@" ++ show i ++ " =") <+> pretty (derefPointer c)
             tag = case isV of Value{} -> "V"; Unevaled -> "E"
 
-instance Pretty Focus where
+instance Pretty (Focus s) where
   prettyPrec p (Eval cl)  = prettyPrec p cl
   prettyPrec p (Match _ cl cc st) = mparens (p > 9) $ (text "M" <?> prettyPrec 10 (clApply cl st)) <?> prettyPrec 10 cc
   prettyPrec p (Mismatch _ cl st) = mparens (p > 9) $ text "⊥" <?> prettyPrec 10 (clApply cl st)
   prettyPrec p (StuckMatch _ cl st) = mparens (p > 9) $ text "B" <?> prettyPrec 10 (clApply cl st)
 
-instance Pretty ControlFrame where
+instance Pretty (ControlFrame s) where
   prettyPrec p (DoCase f _ _ _ _ _ _)    = mparens (p > 9) $ text "DoCase" <+> text (show $ qnameName f)
   prettyPrec p (DoForce _ stack0 stack1) = mparens (p > 9) $ text "DoForce" <?> prettyList (toList $ stack0 >< stack1)
   prettyPrec _ (NatSuc n)                = text ("+" ++ show n)
@@ -588,22 +587,25 @@ instance Pretty ControlFrame where
   prettyPrec p UpdateThunk{} = text "UpdateThunk"
   prettyPrec p (DoApply stack)           = mparens (p > 9) $ text "DoApply" <?> prettyList (toList stack)
 
-compile :: Term -> AM
+compile :: Term -> AM s
 compile t = (Eval (Closure Unevaled t emptyEnv emptyStack), [])
 
-decodeClosure_ :: Closure -> Term
-decodeClosure_ = ignoreBlocking . decodeClosure
+decodeClosure_ :: Closure s -> ST s Term
+decodeClosure_ = ignoreBlocking <.> decodeClosure
 
-decodeClosure :: Closure -> Blocked Term
-decodeClosure (Closure isV t e st)
-  | isEmptyEnv e = topMetaIsNotBlocked $ applyE t (toList $ (fmap . fmap) decodeClosure_ st) <$ b
-  | otherwise    = decodeClosure (Closure isV (applySubst rho t) emptyEnv st)
-  where rho  = parS (map decodeClosure_ $ envToList e)
-        parS = foldr (:#) IdS  -- parallelS is too strict
-        b = case isV of Value b  -> b
-                        Unevaled -> notBlocked ()
+decodeClosure :: Closure s -> ST s (Blocked Term)
+decodeClosure (Closure isV t e st) = do
+    -- Note: it's important to be lazy in the stack and environment here. Hence the
+    -- unsafeInterleaveST's and special version of parallelS.
+    vs <- unsafeInterleaveST $ mapM decodeClosure_ =<< envToList e
+    es <- unsafeInterleaveST $ toList <$> (traverse . traverse) decodeClosure_ st
+    return $ topMetaIsNotBlocked (applyE (applySubst (parS vs) t) es <$ b)
+  where
+    parS = foldr (:#) IdS  -- parallelS is too strict
+    b = case isV of Value b  -> b
+                    Unevaled -> notBlocked ()
 
-elimsToStack :: Env -> Elims -> Stack
+elimsToStack :: Env s -> Elims -> Stack s
 elimsToStack env es = seq (forceStack closures) stack
   where
     closures = (map . fmap) (mkClosure env) es
@@ -614,22 +616,19 @@ elimsToStack env es = seq (forceStack closures) stack
     forceEl (Apply (Arg _ Closure{})) = ()
     forceEl _ = ()
 
-    -- The Var case is crucial, the Def and Con makes little difference
-    -- Var case breaks sharing though!
-    -- mkClosure env (Var x es) | Just p <- lookupEnv x env = clApply (derefPointer_ p) (elimsToStack env es)
     mkClosure _ t@(Def f [])   = Closure Unevaled t emptyEnv emptyStack
     mkClosure _ t@(Con c i []) = Closure Unevaled t emptyEnv emptyStack
     mkClosure env t = Closure Unevaled t env emptyStack
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
-reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile . traceDoc (text "-- fast reduce --")
+reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . traceDoc (text "-- fast reduce --")
     -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     BuiltinEnv{ bZero = zero, bSuc = suc } = bEnv
 
     metaStore = redSt env ^. stMetaStore
 
-    sucCtrl :: ControlStack -> ControlStack
+    sucCtrl :: ControlStack s -> ControlStack s
     sucCtrl (NatSuc n : ctrl) = (NatSuc $! n + 1) : ctrl
     sucCtrl ctrl              = NatSuc 1 : ctrl
 
@@ -658,10 +657,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       | hasVerb "tc.reduce.fast" 110 = trace . show
       | otherwise                    = const id
 
-    -- runAM s = runAM' s
+    compileAndRun :: Term -> Blocked Term
+    compileAndRun t = runST (runAM (compile t))
+
+    runAM :: AM s -> ST s (Blocked Term)
     runAM s = traceDoc (pretty s) (runAM' s)
 
-    runAM' :: AM -> Blocked Term
+    runAM' :: AM s -> ST s (Blocked Term)
     runAM' (Eval cl@(Closure Value{} _ _ _), []) = decodeClosure cl
     runAM' s@(Eval cl@(Closure Unevaled t env stack), !ctrl) = -- The strict match is important!
       {-# SCC "runAM.Eval" #-}
@@ -711,19 +713,22 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         Var x []   ->
           case lookupEnv x env of
             Nothing -> runAM (evalValue (notBlocked ()) (Var (x - envSize env) []) emptyEnv stack, ctrl)
-            Just p  -> case derefPointer p of
-              BlackHole -> __IMPOSSIBLE__
-              Thunk cl@(Closure Unevaled _ _ _) ->
-                blackHole p `seq`
-                runAM (Eval cl, UpdateThunk p : [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
-              Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
+            Just p  -> do
+              thunk <- derefPointer p
+              case thunk of
+                BlackHole -> __IMPOSSIBLE__
+                Thunk cl@(Closure Unevaled _ _ _) -> do
+                  blackHole p
+                  runAM (Eval cl, UpdateThunk p : [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
+                Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
 
         MetaV m [] ->
           case mvInstantiation <$> Map.lookup m metaStore of
             Nothing -> __IMPOSSIBLE__
             Just inst  -> case inst of
-              InstV xs t -> runAM (evalClosure t env stack', ctrl)
-                where (zs, env, stack') = buildEnv xs stack
+              InstV xs t -> do
+                ~(zs, env, stack') <- buildEnv xs stack
+                runAM (evalClosure t env stack', ctrl)
               _          -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
         Lit{} -> runAM done
@@ -733,7 +738,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
           case viewl stack of
             Apply v :< stack' ->
               case b of
-                Abs   _ b -> runAM (evalClosure b (unArg v `extendEnv` env) stack', ctrl)
+                Abs   _ b -> do
+                  env' <- unArg v `extendEnv` env
+                  runAM (evalClosure b env' stack', ctrl)
                 NoAbs _ b -> runAM (evalClosure b env stack', ctrl)
             EmptyL -> runAM done
             _ -> __IMPOSSIBLE__
@@ -775,9 +782,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       | isWHNF t =
         case viewl stack1 of
           Apply k :< stack' -> runAM (Eval (clApply (unArg k) (Apply (defaultArg arg) <| stack')), ctrl)
-          EmptyL            -> runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
-                                                  (extendEnv arg emptyEnv) emptyStack, ctrl)  -- Reduce to λ k → k arg
-            where lam x = Lam defaultArgInfo . Abs x
+          EmptyL            -> do
+            -- primForce arg = λ k → k arg    (if whnf arg)
+            let lam x = Lam defaultArgInfo . Abs x
+            env <- extendEnv arg emptyEnv
+            runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
+                               env emptyStack, ctrl)
           _ -> __IMPOSSIBLE__
       | otherwise = rewriteAM (Eval stuck, ctrl)
       where
@@ -797,7 +807,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
     -- Thunk update
     runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk p : ctrl) =
-      storePointer p cl `seq` runAM (Eval cl, ctrl)
+      storePointer p cl >> runAM (Eval cl, ctrl)
     runAM' (Eval cl@(Closure Value{} _ _ _), DoApply stack : ctrl) =
       runAM (Eval (clApply cl stack), ctrl)
 
@@ -836,7 +846,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(DoCase f i cl0 bs n stack0 stack1 : ctrl)) =
       {-# SCC "runAM.DoCase" #-}
       case blk of
-        Blocked{}    -> runAM stuck
+        Blocked{}    -> runAM =<< stuck
         NotBlocked{} -> case t of
           Con c ci [] | isSuc c -> sucFrame c ci $ catchallFrame $ runAM nomatch
           Con c ci [] -> conFrame c ci (length stack) $ catchallFrame $ runAM nomatch
@@ -849,7 +859,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
 
           Lit l -> litFrame l $ catchallFrame $ runAM nomatch
 
-          _ -> runAM stuck
+          _ -> runAM =<< stuck
           where
             -- Matching constructor
             conFrame c ci ar = lookupCon (conName c) bs =>? \ cc ->
@@ -896,14 +906,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
         patchWild es = spliceStack es0 (Apply $ Arg i cl) es1
           where (es0, es1) = splitStack n es
 
-        stuck = (StuckMatch f (setIsValue (Value blk') cl0) stack', ctrl)
+        stuck = do
+            -- Compute new reason for being stuck. See
+            -- Agda.Syntax.Internal.stuckOn for the logic.
+            blk' <- case blk of
+                      Blocked{}      -> return blk
+                      NotBlocked r _ -> decodeClosure_ cl <&> \ v -> NotBlocked (stuckOn (Apply $ Arg i v) r) ()
+            return (StuckMatch f (setIsValue (Value blk') cl0) stack', ctrl)
           where stack' = spliceStack stack0 (Apply $ Arg i cl) stack1
-                -- Compute new reason for being stuck. See
-                -- Agda.Syntax.Internal.stuckOn for the logic.
-                blk' = case blk of
-                         Blocked{}        -> blk
-                         NotBlocked r _ -> NotBlocked (stuckOn elim r) ()
-                elim = Apply $ Arg i $ decodeClosure_ cl
 
         -- Push catch-all frame if there is a catch-all
         ctrlFallThrough =
@@ -920,7 +930,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
       case cc of
         -- impossible case
         FFail         -> runAM (StuckMatch f (mkValue (NotBlocked AbsurdMatch ()) cl0) stack, ctrl)
-        FDone xs body -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), dropWhile matchy ctrl)
+        FDone xs body -> do
+            ~(zs, env, stack') <- buildEnv xs stack
+            runAM (Eval (Closure Unevaled (lams zs body) env stack'), dropWhile matchy ctrl)
           where
             matchy PatchMatch{}  = True
             matchy FallThrough{} = True
@@ -930,7 +942,6 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
             matchy DoPrimOp{}    = False
             matchy UpdateThunk{} = False
             matchy DoApply{}     = False
-            (zs, env, stack') = buildEnv xs stack
 
             lams xs t = foldr lam t xs
             lam x t = Lam (argInfo x) (Abs (unArg x) t)
@@ -965,22 +976,24 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     (=>?) :: Maybe a -> (a -> b) -> b -> b
     (m =>? f) z = maybe z f m
 
-    fallback :: AM -> Blocked Term
-    fallback (Eval c, ctrl) = runAM (mkValue $ runReduce $ slowReduceTerm $ decodeClosure_ c, ctrl)
+    fallback :: AM s -> ST s (Blocked Term)
+    fallback (Eval c, ctrl) = do
+        v <- decodeClosure_ c
+        runAM (mkValue $ runReduce $ slowReduceTerm v, ctrl)
       where mkValue b = evalValue (() <$ b) (ignoreBlocking b) emptyEnv emptyStack
     fallback _ = __IMPOSSIBLE__
 
-    rewriteAM :: AM -> Blocked Term
+    rewriteAM :: AM s -> ST s (Blocked Term)
     rewriteAM s | not hasRewriting = runAM s
     rewriteAM s@(Eval (Closure (Value blk) t env stack), ctrl)
       | null rewr = runAM s
-      | otherwise = traceDoc (text "R" <+> pretty s) $
-      case runReduce (rewrite blk v0 rewr es) of
-        NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) emptyEnv emptyStack, ctrl)
-        YesReduction _ v -> runAM (evalClosure v emptyEnv emptyStack, ctrl)
-      where v0 = decodeClosure_ $ Closure Unevaled t env emptyStack
-            es = toList $ (fmap . fmap) decodeClosure_ stack
-            rewr = case t of
+      | otherwise = traceDoc (text "R" <+> pretty s) $ do
+        v0 <- decodeClosure_ (Closure Unevaled t env emptyStack)
+        es <- toList <$> (traverse . traverse) decodeClosure_ stack
+        case runReduce (rewrite blk v0 rewr es) of
+          NoReduction b    -> runAM (evalValue (() <$ b) (ignoreBlocking b) emptyEnv emptyStack, ctrl)
+          YesReduction _ v -> runAM (evalClosure v emptyEnv emptyStack, ctrl)
+      where rewr = case t of
                      Def f []   -> rewriteRules f
                      Con c _ [] -> rewriteRules (conName c)
                      _          -> __IMPOSSIBLE__
@@ -989,13 +1002,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = runAM . compile 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
     -- arguments in case of partial application.
-    buildEnv :: [Arg String] -> Stack -> ([Arg String], Env, Stack)
+    buildEnv :: [Arg String] -> Stack s -> ST s ([Arg String], Env s, Stack s)
     buildEnv xs stack = go xs stack emptyEnv
       where
-        go [] st env = ([], env, st)
+        go [] st env = return ([], env, st)
         go xs0@(x : xs) st env =
           case viewl st of
-            EmptyL        -> (xs0, env, st)
-            Apply c :< st -> go xs st (extendEnv (unArg c) env)
+            EmptyL        -> return (xs0, env, st)
+            Apply c :< st -> go xs st =<< extendEnv (unArg c) env
             _             -> __IMPOSSIBLE__
 
