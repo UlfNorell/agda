@@ -531,15 +531,15 @@ splitStack = splitAt
 indexStack :: StackC a -> Int -> a
 indexStack = (!!)
 
+spliceStack :: StackC a -> a -> StackC a -> StackC a
+spliceStack s0 e s1 = s0 ++ e : s1
+
 -- End of stack API --
 
 -- | Does not preserve 'IsValue'.
 clApply :: Closure s -> Stack s -> Closure s
 clApply c es' | isEmptyStack es' = c
 clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
-
-spliceStack :: StackC a -> a -> StackC a -> StackC a
-spliceStack s0 e s1 = s0 >< e <| s1
 
 type ControlStack s = [ControlFrame s]
 
@@ -738,10 +738,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         MetaV m [] ->
           case mvInstantiation <$> Map.lookup m metaStore of
             Nothing -> __IMPOSSIBLE__
-            Just inst  -> case inst of
+            Just inst -> case inst of
               InstV xs t -> runAM (evalClosure t env stack', ctrl)
-                where (zs, env, stack') = buildEnv xs stack
-              _          -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
+                where (zs, env, !stack') = buildEnv xs stack
+              _ -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
         Lit{} -> runAM done
         Pi{}  -> runAM done
@@ -888,8 +888,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               -- Matching a literal against 'suc'
               matchLitSuc n | n <= 0 = id
               matchLitSuc n = fsucBranch bs =>? \ cc ->
-                runAM (Match f cl0 cc (spliceStack stack0 (Apply $ defaultArg n') stack1), ctrlCA)
-                where n' = pureThunk $ valueNoBlk (Lit $! LitNat noRange $! n - 1) emptyEnv emptyStack
+                  runAM (Match f cl0 cc (spliceStack stack0 (Apply $ defaultArg arg) stack1), ctrlCA)
+                where n'  = n - 1
+                      arg = {-# SCC "matchLitSuc.arg" #-} pureThunk $ valueNoBlk (Lit $ LitNat noRange n') emptyEnv emptyStack
 
               -- Matching 'zero'
               matchLitZero n | n == 0, Just z <- zero = matchCon z ConOSystem 0
@@ -927,15 +928,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
       case cc of
         -- impossible case
         FFail         -> unwindStuckCase (NotBlocked AbsurdMatch ()) ctrl
-        FDone xs body -> do
-            let (zs, env, stack') = buildEnv xs stack
-                ctrl' = dropWhile matchy ctrl
-            runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
-            -- case body of -- Not helping much, and making other things slower
-            --   Var x [] | null zs -> do -- shortcut for returning a single variable
-            --     cl <- derefPointer_ (lookupEnv_ x env)
-            --     runAM (Eval (clApply cl stack'), ctrl')
-            --   _ -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
+        FDone xs body -> {-# SCC "runAM.FDone" #-} do
+            -- Don't ask me why, but not being strict in the stack causes a memory leak.
+            let (zs, env, !stack') = buildEnv xs stack
+                ctrl'              = dropWhile matchy ctrl
+            case body of
+              Var x [] | null zs -> do -- shortcut for returning a single variable
+                cl <- derefPointer_ (lookupEnv_ x env)
+                runAM (Eval (clApply cl stack'), ctrl')
+              _ -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
           where
             matchy FallThrough{} = True
             matchy EndCase{}     = True
@@ -950,7 +951,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             lam x t = Lam (argInfo x) (Abs (unArg x) t)
 
         -- Split on nth elimination on the stack
-        FCase n bs ->
+        FCase n bs -> {-# SCC "runAM.FDone" #-}
           case splitStack n stack of
             (stack0, st) -> case st of
               -- If the nth elimination is not given, we're done
