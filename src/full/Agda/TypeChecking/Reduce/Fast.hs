@@ -755,16 +755,16 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             [] -> runAM done
             _ -> __IMPOSSIBLE__
 
-        Def f   es -> shiftElims (Def f   []) es
-        Con c i es -> shiftElims (Con c i []) es
-        Var x   es -> shiftElims (Var x   []) es
-        MetaV m es -> shiftElims (MetaV m []) es
+        Def f   es -> shiftElims (Def f   []) emptyEnv env es
+        Con c i es -> shiftElims (Con c i []) emptyEnv env es
+        Var x   es -> shiftElims (Var x   []) env      env es
+        MetaV m es -> shiftElims (MetaV m []) emptyEnv env es
 
         _ -> fallback s
       where done = (Eval $ mkValue (notBlocked ()) cl, ctrl)
-            shiftElims t es = do
+            shiftElims t env0 env es = do
               stack' <- elimsToStack env es
-              runAM (evalClosure t env (stack' >< stack), ctrl)
+              runAM (evalClosure t env0 (stack' >< stack), ctrl)
 
     -- +k continuations
     runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSuc m : ctrl) =
