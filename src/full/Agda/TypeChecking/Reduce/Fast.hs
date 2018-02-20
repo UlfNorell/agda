@@ -669,15 +669,18 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
 
     hasVerb tag lvl = unReduceM (hasVerbosity tag lvl) env
 
+    doDebug = hasVerb "tc.reduce.fast" 110
+
     traceDoc
-      | hasVerb "tc.reduce.fast" 110 = trace . show
-      | otherwise                    = const id
+      | doDebug   = trace . show
+      | otherwise = const id
 
     compileAndRun :: Term -> Blocked Term
     compileAndRun t = runST (runAM (compile t))
 
     runAM :: AM s -> ST s (Blocked Term)
-    runAM s = traceDoc (pretty s) (runAM' s)
+    runAM = if doDebug then \ s -> trace (prettyShow s) (runAM' s)
+                       else runAM'
 
     runAM' :: AM s -> ST s (Blocked Term)
     runAM' (Eval cl@(Closure Value{} _ _ _), []) = decodeClosure cl
