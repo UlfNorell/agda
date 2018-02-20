@@ -495,30 +495,18 @@ lookupEnv i e | i < n     = Just (e !! i)
 type Stack s = StackC (Elim' (Pointer s))
 
 -- "Abstract" interface to stacks. Change StackC and the functions below to
--- change the representation of stacks.
+-- change the representation of stacks. (And some matching on stacks against
+-- lists)
 
-type StackC     = []
-type StackViewL = []
+type StackC = []
 
-pattern (:<) :: a -> StackViewL a -> StackViewL a
-pattern (:<) x xs = x : xs
-
-pattern EmptyL :: StackViewL a
-pattern EmptyL = []
-
-infixr 5 :<|, :<, <|, ><
-
-pattern (:<|) :: a -> StackC a -> StackC a
-pattern (:<|) x xs = x : xs
+infixr 5 <|, ><
 
 (<|) :: a -> StackC a -> StackC a
 (<|) = (:)
 
 (><) :: StackC a -> StackC a -> StackC a
 (><) = (++)
-
-viewl :: StackC a -> StackViewL a
-viewl = id
 
 emptyStack :: StackC a
 emptyStack = []
@@ -700,7 +688,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             CTyCon         -> rewriteAM done
             CCon{}         -> runAM done   -- Only happens for builtinSharp (which is a Def when you bind it)
             COther         -> fallback s
-            CForce | (stack0, Apply v :<| stack1) <- splitStack 4 stack ->
+            CForce | (stack0, Apply v : stack1) <- splitStack 4 stack ->
               evalPtr (unArg v) emptyStack (DoForce f stack0 stack1 : ctrl)
             CForce -> runAM done
             CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims (toList stack) ->
@@ -712,12 +700,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
           runAM (evalValueNoBlk (Lit (LitNat noRange 0)) emptyEnv stack, ctrl)
 
         -- Nat suc
-        Con c i [] | isSuc c, Apply v :<| _ <- stack ->
+        Con c i [] | isSuc c, Apply v : _ <- stack ->
           evalPtr (unArg v) emptyStack (sucCtrl ctrl)
 
         Con c i [] ->
           case splitStack ar stack of
-            (args, Proj _ p :<| stack') -> evalPtr (unArg arg) stack' ctrl
+            (args, Proj _ p : stack') -> evalPtr (unArg arg) stack' ctrl
               where
                 fields    = conFields c
                 Just n    = List.elemIndex p fields
@@ -743,12 +731,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         Pi{}  -> runAM done
 
         Lam h b ->
-          case viewl stack of
-            Apply v :< stack' ->
+          case stack of
+            Apply v : stack' ->
               case b of
                 Abs   _ b -> runAM (evalClosure b (unArg v `extendEnv` env) stack', ctrl)
                 NoAbs _ b -> runAM (evalClosure b env stack', ctrl)
-            EmptyL -> runAM done
+            [] -> runAM done
             _ -> __IMPOSSIBLE__
 
         Def f   es -> shiftElims (Def f   []) es
@@ -797,11 +785,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     -- primForce
     runAM' (Eval arg@(Closure (Value blk) t _ _), DoForce pf stack0 stack1 : ctrl)
       | isWHNF t =
-        case viewl stack1 of
-          Apply k :< stack' -> do
+        case stack1 of
+          Apply k : stack' -> do
             p <- createThunk arg
             evalPtr (unArg k) (Apply (defaultArg p) <| stack') ctrl
-          EmptyL -> do
+          [] -> do
             -- primForce arg = λ k → k arg    (if whnf arg)
             let lam x = Lam defaultArgInfo . Abs x
             env <- (`extendEnv` emptyEnv) <$> createThunk arg
@@ -954,18 +942,17 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         -- Split on nth elimination on the stack
         FCase n bs ->
           case splitStack n stack of
-            (stack0, st) -> case viewl st of
+            (stack0, st) -> case st of
               -- If the nth elimination is not given, we're done
-              EmptyL -> done Underapplied
+              [] -> done Underapplied
               -- apply elim: push the current match on the control stack and
               -- evaluate the argument
-              Apply e :< stack1 -> evalPtr (unArg e) emptyStack $ DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl
+              Apply e : stack1 -> evalPtr (unArg e) emptyStack $ DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl
               -- projection elim
-              e@(Proj o p) :< stack1 ->
+              e@(Proj o p) : stack1 ->
                 case lookupCon p bs of
                   Nothing -> done $ StuckOn (Proj o p) -- No case for the projection: stop
                   Just cc -> runAM (Match f cl0 cc (stack0 >< stack1), ctrl)
-              _ -> __IMPOSSIBLE__  -- coverage checker can't do pattern synonyms!
       where done why = unwindStuckCase (NotBlocked why ()) ctrl
 
     evalClosure t env stack = Eval (Closure Unevaled t env stack)
@@ -1027,8 +1014,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
       where
         go [] st env = return ([], env, st)
         go xs0@(x : xs) st env =
-          case viewl st of
-            EmptyL        -> return (xs0, env, st)
-            Apply c :< st -> go xs st (unArg c `extendEnv` env)
-            _             -> __IMPOSSIBLE__
+          case st of
+            []           -> return (xs0, env, st)
+            Apply c : st -> go xs st (unArg c `extendEnv` env)
+            _            -> __IMPOSSIBLE__
 
