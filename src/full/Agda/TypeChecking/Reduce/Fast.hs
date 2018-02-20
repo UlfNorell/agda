@@ -433,16 +433,15 @@ setIsValue isV (Closure _ t env stack) = Closure isV t env stack
 
 type Env s = [Pointer s]
 
-type Pointer s = STRef s (Thunk (Closure s))
+data Pointer s = Pure (Closure s)
+               | Pointer (STRef s (Thunk (Closure s)))
 
 data Thunk a = BlackHole | Thunk a
   deriving (Functor)
 
-newPointer :: Closure s -> ST s (Pointer s)
-newPointer cl = newSTRef (Thunk cl)
-
 derefPointer :: Pointer s -> ST s (Thunk (Closure s))
-derefPointer ptr = readSTRef ptr
+derefPointer (Pure x)      = return (Thunk x)
+derefPointer (Pointer ptr) = readSTRef ptr
 
 derefPointer_ :: Pointer s -> ST s (Closure s)
 derefPointer_ ptr = do
@@ -451,18 +450,24 @@ derefPointer_ ptr = do
 
 -- | Only use for debug printing!
 unsafeDerefPointer :: Pointer s -> Thunk (Closure s)
-unsafeDerefPointer p = unsafePerformIO (unsafeSTToIO (derefPointer p))
+unsafeDerefPointer (Pure x)    = Thunk x
+unsafeDerefPointer (Pointer p) = unsafePerformIO (unsafeSTToIO (readSTRef p))
 
 storePointer :: Pointer s -> Closure s -> ST s ()
-storePointer ptr cl = writeSTRef ptr (Thunk cl)
+storePointer Pure{}        _  = return ()
+storePointer (Pointer ptr) cl = writeSTRef ptr (Thunk cl)
 
 blackHole :: Pointer s -> ST s ()
-blackHole ptr = writeSTRef ptr BlackHole
+blackHole Pure{} = return ()
+blackHole (Pointer ptr) = writeSTRef ptr BlackHole
 
 createThunk :: Closure s -> ST s (Pointer s)
 createThunk (Closure _ (Var x []) env' stack)
   | isEmptyStack stack, Just p <- lookupEnv x env' = return p
-createThunk cl = newPointer cl
+createThunk cl = Pointer <$> newSTRef (Thunk cl)
+
+pureThunk :: Closure s -> Pointer s
+pureThunk = Pure
 
 -- "Abstract" interface to environments
 
@@ -753,32 +758,29 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     -- +k continuations
     runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSuc m : ctrl) =
       runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) emptyEnv emptyStack, ctrl)
-    runAM' (Eval cl, NatSuc m : ctrl) = do
-        -- Lots of pointers!
-        clM <- plus m cl
-        runAM (Eval (mkValue (notBlocked ()) clM), ctrl)
+    runAM' (Eval cl, NatSuc m : ctrl) =
+        runAM (Eval (mkValue (notBlocked ()) $ plus m cl), ctrl)
       where
-        plus 0 cl = return cl
-        plus n cl = do
-          arg <- createThunk =<< plus (n - 1) cl
-          return $ valueNoBlk (Con (fromJust suc) ConOSystem [])
-                              emptyEnv $ Apply (defaultArg arg) <| emptyStack
+        plus 0 cl = cl
+        plus n cl =
+          valueNoBlk (Con (fromJust suc) ConOSystem []) emptyEnv $
+                     Apply (defaultArg arg) <| emptyStack
+          where arg = pureThunk (plus (n - 1) cl)
 
     -- builtin functions
     runAM' (Eval (Closure _ (Lit a) _ _), DoPrimOp f op vs es cc : ctrl) =
       case es of
         []      -> runAM (evalValueNoBlk (op (a : vs)) emptyEnv emptyStack, ctrl)
         e : es' -> evalPtr e emptyStack (DoPrimOp f op (a : vs) es' cc : ctrl)
-    runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) = do
-      -- TODO: seems silly to create pointers here, but not sure how to avoid
-      p    <- createThunk cl
-      lits <- stackFromList <$> mapM (createThunk . litClos) (reverse vs)
-      let stack = fmap (Apply . defaultArg) $ spliceStack lits p (stackFromList es)
-          stuck = Closure (Value blk) (Def f []) emptyEnv stack
+    runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
       case mcc of
         Nothing -> rewriteAM (Eval stuck, ctrl) -- Not a literal and no clauses: stuck
         Just cc -> runAM (Match f cl0 cc stack, EndCase f (clApply cl0 stack) : ctrl)
       where                                     -- otherwise try the clauses on non-literal
+        p         = pureThunk cl
+        lits      = stackFromList $ map (pureThunk . litClos) (reverse vs)
+        stack     = fmap (Apply . defaultArg) $ spliceStack lits p (stackFromList es)
+        stuck     = Closure (Value blk) (Def f []) emptyEnv stack
         cl0       = Closure Unevaled (Def f []) emptyEnv emptyStack
         litClos l = valueNoBlk (Lit l) emptyEnv emptyStack
 
@@ -786,22 +788,21 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     runAM' (Eval arg@(Closure (Value blk) t _ _), DoForce pf stack0 stack1 : ctrl)
       | isWHNF t =
         case stack1 of
-          Apply k : stack' -> do
-            p <- createThunk arg
-            evalPtr (unArg k) (Apply (defaultArg p) <| stack') ctrl
+          Apply k : stack' ->
+            evalPtr (unArg k) (Apply (defaultArg argPtr) <| stack') ctrl
           [] -> do
             -- primForce arg = λ k → k arg    (if whnf arg)
             let lam x = Lam defaultArgInfo . Abs x
-            env <- (`extendEnv` emptyEnv) <$> createThunk arg
+                env   = argPtr `extendEnv` emptyEnv
             runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
                                env emptyStack, ctrl)
           _ -> __IMPOSSIBLE__
-      | otherwise = do
-        p <- createThunk arg
-        let stack' = spliceStack stack0 (Apply $ defaultArg p) stack1
-            stuck  = Closure (Value blk) (Def pf []) emptyEnv stack'
-        rewriteAM (Eval stuck, ctrl)
+      | otherwise = rewriteAM (Eval stuck, ctrl)
       where
+        argPtr = pureThunk arg
+        stack' = spliceStack stack0 (Apply $ defaultArg argPtr) stack1
+        stuck  = Closure (Value blk) (Def pf []) emptyEnv stack'
+
         isWHNF u = case u of
           Lit{}      -> True
           Con{}      -> True
@@ -847,10 +848,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
       {-# SCC "runAM.DoCase" #-}
       case blk of
         Blocked{}    -> stuck
-        NotBlocked{} -> do
-
-          p <- unsafeInterleaveST $ createThunk cl -- TODO: ugh, creating a new thunk (at least do it lazily)
-          let stack' = spliceStack stack0 (Apply $ Arg i p) stack1
+        NotBlocked{} ->
+          let p      = pureThunk cl
+              stack' = spliceStack stack0 (Apply $ Arg i p) stack1
               -- Push catch-all frame if there is a catch-all
               ctrlCA = case fcatchAllBranch bs of
                 Nothing -> ctrl
@@ -861,7 +861,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                 runAM (Match f cl0 cc (stack0 >< stack >< stack1), ctrlCA)
 
               -- Catch-all
-              matchCatchall = fcatchAllBranch bs =>? \ cc -> do
+              matchCatchall = fcatchAllBranch bs =>? \ cc ->
                 runAM (Match f cl0 cc stack', ctrl) -- Not ctrlCA, since this _is_ the catch-all
 
               -- Matching literal
@@ -876,16 +876,15 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
 
               -- Matching a literal against 'suc'
               matchLitSuc n | n <= 0 = id
-              matchLitSuc n = fsucBranch bs =>? \ cc -> do
-                p <- createThunk n'
-                runAM (Match f cl0 cc (spliceStack stack0 (Apply $ defaultArg p) stack1), ctrlCA)
-                where n' = valueNoBlk (Lit $! LitNat noRange $! n - 1) emptyEnv emptyStack
+              matchLitSuc n = fsucBranch bs =>? \ cc ->
+                runAM (Match f cl0 cc (spliceStack stack0 (Apply $ defaultArg n') stack1), ctrlCA)
+                where n' = pureThunk $ valueNoBlk (Lit $! LitNat noRange $! n - 1) emptyEnv emptyStack
 
               -- Matching 'zero'
               matchLitZero n | n == 0, Just z <- zero = matchCon z ConOSystem 0
               matchLitZero _ = id
 
-          case t of
+          in case t of
             Con c ci [] | isSuc c -> matchSuc c ci $ matchCatchall $ runAM nomatch
             Con c ci [] -> matchCon c ci (length stack) $ matchCatchall $ runAM nomatch
 
