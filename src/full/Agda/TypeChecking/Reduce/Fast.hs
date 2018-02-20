@@ -546,7 +546,7 @@ data ControlFrame s = DoCase QName ArgInfo (Closure s) (FastCase FastCompiledCla
                     | PatchMatch (Stack s -> Stack s)
                     | FallThrough FastCompiledClauses
                     | DoPrimOp QName ([Literal] -> Term) [Literal] [Closure s] (Maybe FastCompiledClauses)
-                    | UpdateThunk (Pointer s)
+                    | UpdateThunk [Pointer s]
                     | DoApply (Stack s) -- To allow thunk updates before elimination
 
 data Focus s = Eval (Closure s)
@@ -584,7 +584,7 @@ instance Pretty (ControlFrame s) where
   prettyPrec p (DoPrimOp f _ vs cls _)   = mparens (p > 9) $ sep [ text "DoPrimOp" <+> pretty f
                                                                  , nest 2 $ prettyList vs
                                                                  , nest 2 $ prettyList cls ]
-  prettyPrec p UpdateThunk{} = text "UpdateThunk"
+  prettyPrec p UpdateThunk{}             = text "UpdateThunk"
   prettyPrec p (DoApply stack)           = mparens (p > 9) $ text "DoApply" <?> prettyList (toList stack)
 
 compile :: Term -> AM s
@@ -631,6 +631,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     sucCtrl :: ControlStack s -> ControlStack s
     sucCtrl (NatSuc n : ctrl) = (NatSuc $! n + 1) : ctrl
     sucCtrl ctrl              = NatSuc 1 : ctrl
+
+    updateThunk :: Pointer s -> ControlStack s -> ControlStack s
+    updateThunk p (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
+    updateThunk p ctrl = UpdateThunk [p] : ctrl
 
     runReduce m = unReduceM m env
     conNameId = nameId . qnameName . conName
@@ -719,7 +723,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                 BlackHole -> __IMPOSSIBLE__
                 Thunk cl@(Closure Unevaled _ _ _) -> do
                   blackHole p
-                  runAM (Eval cl, UpdateThunk p : [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
+                  runAM (Eval cl, updateThunk p $ [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
                 Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
 
         MetaV m [] ->
@@ -806,8 +810,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
           Shared{}   -> __IMPOSSIBLE__
 
     -- Thunk update
-    runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk p : ctrl) =
-      storePointer p cl >> runAM (Eval cl, ctrl)
+    runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk ps : ctrl) =
+      mapM_ (`storePointer` cl) ps >> runAM (Eval cl, ctrl)
     runAM' (Eval cl@(Closure Value{} _ _ _), DoApply stack : ctrl) =
       runAM (Eval (clApply cl stack), ctrl)
 
