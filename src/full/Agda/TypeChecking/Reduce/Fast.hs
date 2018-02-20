@@ -475,6 +475,10 @@ extendEnv (Closure _ (Var x []) env' stack) env
   | isEmptyStack stack, Just p <- lookupEnv x env' = return (p : env)
 extendEnv cl env = (: env) <$> newPointer cl
 
+-- | Unsafe.
+lookupEnv_ :: Int -> Env s -> Pointer s
+lookupEnv_ i e = e !! i
+
 lookupEnv :: Int -> Env s -> Maybe (Pointer s)
 lookupEnv i e | i < n     = Just (e !! i)
               | otherwise = Nothing
@@ -936,7 +940,12 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         FFail         -> runAM (StuckMatch f (mkValue (NotBlocked AbsurdMatch ()) cl0) stack, ctrl)
         FDone xs body -> do
             ~(zs, env, stack') <- buildEnv xs stack
-            runAM (Eval (Closure Unevaled (lams zs body) env stack'), dropWhile matchy ctrl)
+            let ctrl' = dropWhile matchy ctrl
+            case body of
+              Var x [] | null zs -> do -- shortcut for returning a single variable
+                cl <- derefPointer_ (lookupEnv_ x env)
+                runAM (Eval (clApply cl stack'), ctrl')
+              _ -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
           where
             matchy PatchMatch{}  = True
             matchy FallThrough{} = True
