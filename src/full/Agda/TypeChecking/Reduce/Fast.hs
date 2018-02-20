@@ -454,8 +454,8 @@ unsafeDerefPointer (Pure x)    = Thunk x
 unsafeDerefPointer (Pointer p) = unsafePerformIO (unsafeSTToIO (readSTRef p))
 
 storePointer :: Pointer s -> Closure s -> ST s ()
-storePointer Pure{}        _  = return ()
-storePointer (Pointer ptr) cl = writeSTRef ptr (Thunk cl)
+storePointer Pure{}        _   = return ()
+storePointer (Pointer ptr) !cl = writeSTRef ptr (Thunk cl)
 
 blackHole :: Pointer s -> ST s ()
 blackHole Pure{} = return ()
@@ -616,12 +616,21 @@ decodeClosure (Closure isV t env stack) = do
                     Unevaled -> notBlocked ()
 
 elimsToStack :: Env s -> Elims -> ST s (Stack s)
-elimsToStack env es =
-    stackFromList <$> (traverse . traverse) (createThunk . mkClosure env) es
+elimsToStack env es = do
+    stack <- (traverse . traverse) createThunk closures
+    seq (forceStack stack) (return stack)
   where
-    mkClosure _ t@(Def f [])   = Closure Unevaled t emptyEnv emptyStack
-    mkClosure _ t@(Con c i []) = Closure Unevaled t emptyEnv emptyStack
-    mkClosure env t = Closure Unevaled t env emptyStack
+    closures = (map . fmap) (mkClosure env) es
+
+    -- Need to be strict in mkClosure to avoid memory leak
+    forceStack = foldl (\ () -> forceEl) ()
+    forceEl (Apply (Arg _ (Pure Closure{}))) = ()
+    forceEl (Apply (Arg _ (Pointer p))) = ()
+    forceEl _ = ()
+
+    mkClosure _   t@(Def f [])   = Closure Unevaled t emptyEnv emptyStack
+    mkClosure _   t@(Con c i []) = Closure Unevaled t emptyEnv emptyStack
+    mkClosure env t              = Closure Unevaled t env emptyStack
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
 reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . traceDoc (text "-- fast reduce --")
@@ -727,9 +736,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
           case mvInstantiation <$> Map.lookup m metaStore of
             Nothing -> __IMPOSSIBLE__
             Just inst  -> case inst of
-              InstV xs t -> do
-                ~(zs, env, stack') <- buildEnv xs stack
-                runAM (evalClosure t env stack', ctrl)
+              InstV xs t -> runAM (evalClosure t env stack', ctrl)
+                where (zs, env, stack') = buildEnv xs stack
               _          -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
         Lit{} -> runAM done
@@ -917,8 +925,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         -- impossible case
         FFail         -> unwindStuckCase (NotBlocked AbsurdMatch ()) ctrl
         FDone xs body -> do
-            ~(zs, env, stack') <- buildEnv xs stack
-            let ctrl' = dropWhile matchy ctrl
+            let (zs, env, stack') = buildEnv xs stack
+                ctrl' = dropWhile matchy ctrl
             runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
             -- case body of -- Not helping much, and making other things slower
             --   Var x [] | null zs -> do -- shortcut for returning a single variable
@@ -1008,13 +1016,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
     -- arguments in case of partial application.
-    buildEnv :: [Arg String] -> Stack s -> ST s ([Arg String], Env s, Stack s)
+    buildEnv :: [Arg String] -> Stack s -> ([Arg String], Env s, Stack s)
     buildEnv xs stack = go xs stack emptyEnv
       where
-        go [] st env = return ([], env, st)
+        go [] st env = ([], env, st)
         go xs0@(x : xs) st env =
           case st of
-            []           -> return (xs0, env, st)
+            []           -> (xs0, env, st)
             Apply c : st -> go xs st (unArg c `extendEnv` env)
             _            -> __IMPOSSIBLE__
 
