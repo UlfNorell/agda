@@ -639,6 +639,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     BuiltinEnv{ bZero = zero, bSuc = suc } = bEnv
 
     metaStore = redSt env ^. stMetaStore
+    getMeta m = maybe __IMPOSSIBLE__ mvInstantiation (Map.lookup m metaStore)
 
     sucCtrl :: ControlStack s -> ControlStack s
     sucCtrl (NatSuc n : ctrl) = (NatSuc $! n + 1) : ctrl
@@ -736,12 +737,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             Just p  -> evalPtr p stack ctrl
 
         MetaV m [] ->
-          case mvInstantiation <$> Map.lookup m metaStore of
-            Nothing -> __IMPOSSIBLE__
-            Just inst -> case inst of
-              InstV xs t -> runAM (evalClosure t env stack', ctrl)
-                where (zs, env, !stack') = buildEnv xs stack
-              _ -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
+          case getMeta m of
+            InstV xs t -> runAM (evalClosure (lams zs t) env stack', ctrl)
+              where (zs, env, !stack') = buildEnv xs stack
+            _ -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
         Lit{} -> runAM done
         Pi{}  -> runAM done
@@ -947,9 +946,6 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             matchy UpdateThunk{} = False
             matchy DoApply{}     = False
 
-            lams xs t = foldr lam t xs
-            lam x t = Lam (argInfo x) (Abs (unArg x) t)
-
         -- Split on nth elimination on the stack
         FCase n bs -> {-# SCC "runAM.FDone" #-}
           case splitStack n stack of
@@ -1019,6 +1015,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                      _          -> __IMPOSSIBLE__
     rewriteAM' _ =
       __IMPOSSIBLE__
+
+    lams xs t = foldr lam t xs
+    lam x t = Lam (argInfo x) (Abs (unArg x) t)
 
     -- Build the environment for a body with some given free variables from the
     -- top of the stack. Also returns the remaining stack and names for missing
