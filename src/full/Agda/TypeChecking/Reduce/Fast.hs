@@ -64,6 +64,7 @@ The differences are the following:
 module Agda.TypeChecking.Reduce.Fast
   ( fastReduce ) where
 
+import Control.Arrow (first, second)
 import Control.Monad.Reader
 import Control.Monad.ST
 import Control.Monad.ST.Unsafe
@@ -308,6 +309,13 @@ data FastCase c = FBranches
     -- ^ (Possibly additional) catch-all clause.
   }
 
+noBranches :: FastCase a
+noBranches = FBranches{ fprojPatterns   = False
+                      , fconBranches    = Map.empty
+                      , fsucBranch      = Nothing
+                      , flitBranches    = Map.empty
+                      , fcatchAllBranch = Nothing }
+
 -- | Case tree with bodies.
 
 data FastCompiledClauses
@@ -332,10 +340,12 @@ fastCompiledClauses bEnv cc =
   case cc of
     Fail              -> FFail
     Done xs b         -> FDone xs b
+    Case (Arg _ n) Branches{ etaBranch = Just (c, cc), catchAllBranch = ca } ->
+      FEta n (conFields c) (fastCompiledClauses bEnv $ content cc) (fastCompiledClauses bEnv <$> ca)
     Case (Arg _ n) bs -> FCase n (fastCase bEnv bs)
 
 fastCase :: BuiltinEnv -> Case CompiledClauses -> FastCase FastCompiledClauses
-fastCase env (Branches proj con lit wild _) =
+fastCase env (Branches proj con _ lit wild _) =
   FBranches
     { fprojPatterns   = proj
     , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses env . content) (stripSuc con)
@@ -362,12 +372,16 @@ instance Pretty NameId where
 instance Pretty FastCompiledClauses where
   pretty (FDone xs t) = (text "done" <+> prettyList xs) <?> prettyPrec 10 t
   pretty FFail        = text "fail"
+  pretty (FEta n _ cc ca) =
+    text ("eta " ++ show n ++ " of") <?>
+      vcat ([ text "{} ->" <?> pretty cc ] ++
+            [ text "_ ->" <?> pretty cc | Just cc <- [ca] ])
   pretty (FCase n bs) | fprojPatterns bs =
-    sep [ text "record"
+    sep [ text $ "project " ++ show n
         , nest 2 $ pretty bs
         ]
   pretty (FCase n bs) =
-    text ("case " ++ prettyShow n ++ " of") <?> pretty bs
+    text ("case " ++ show n ++ " of") <?> pretty bs
 
 {-# INLINE lookupCon #-}
 lookupCon :: QName -> FastCase c -> Maybe c
@@ -945,6 +959,20 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             matchy DoPrimOp{}    = False
             matchy UpdateThunk{} = False
             matchy DoApply{}     = False
+
+        FEta n fs cc ca ->
+          let (stack0, st) = splitStack n stack in
+          case st of
+            []               -> done Underapplied
+            Apply e : stack1 -> do
+              -- Replace e by its projections on the stack. And don't forget a
+              -- FallThrough frame if there's a catch-all.
+              let projClosure f = Closure Unevaled (Var 0 []) (extendEnv (unArg e) emptyEnv) [Proj ProjSystem f]
+              projs <- mapM (createThunk . projClosure) fs
+              let stack' = stack0 >< map (Apply . defaultArg) projs >< stack1
+                  ctrl'  = caseMaybe ca ctrl $ \ cc -> FallThrough f cl0 cc stack : ctrl
+              runAM (Match f cl0 cc stack', ctrl')
+            _ -> __IMPOSSIBLE__
 
         -- Split on nth elimination on the stack
         FCase n bs -> {-# SCC "runAM.FDone" #-}
