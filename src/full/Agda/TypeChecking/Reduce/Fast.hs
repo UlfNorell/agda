@@ -555,16 +555,54 @@ clApply :: Closure s -> Stack s -> Closure s
 clApply c es' | isEmptyStack es' = c
 clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
+-- | The control stack contains a list of continuations, i.e. what to do with
+--   the result of the current focus.
 type ControlStack s = [ControlFrame s]
 
+-- | Control frames are continuations that act on value closures.
 data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Stack s) (Stack s)
-                    | ForceK QName (Stack s) (Stack s)
-                    | NatSucK Integer
+                        -- ^ @CaseK f i bs stack0 stack1@. Pattern match on the focus (with arg info
+                        --   @i@) using the @bs@ case tree. @f@ is the name of the function doing
+                        --   the matching, and @stack0@ and @stack1@ are the values bound to the
+                        --   pattern variables to the left and right (respectively) of the focus.
                     | CatchAllK QName FastCompiledClauses (Stack s)
+                        -- ^ @CatchAllK f cc stack@. Case trees are not fully expanded, that is,
+                        --   inner matches can be partial and covered by a catch-all at a higher
+                        --   level. This catch-all is represented on the control stack as a
+                        --   @CatchAllK@. @f@ is the name of the function doing the matching, @cc@
+                        --   is the case tree in the catch-all case and @stack@ is the value of the
+                        --   pattern variables at the point of the catch-all.
                     | NoMatchK QName (Closure s)
+                        -- ^ @NoMatchK f cl@. This marks the end of the pattern matching in a
+                        --   function @f@. In case of successful matching we drop this frame and any
+                        --   preceeding @CatchAllK@ frames. In case of a stuck match, @cl@ is
+                        --   returned with the appropriate blocking tag, and in case of a failed
+                        --   match we throw an error upon reach the @NoMatchK@ frame.
+                    | ForceK QName (Stack s) (Stack s)
+                        -- ^ @ForceK f stack0 stack1@. Evaluating @primForce@ of the focus. @f@ is
+                        --   the name of @primForce@ and is used to build the result if evaluation
+                        --   gets stuck. @stack0@ are the level and type arguments and @stack1@
+                        --   contains (if not empty) the continuation and any additional
+                        --   eliminations.
+                    | NatSucK Integer
+                        -- ^ @NatSucK n@. Add @n@ to the focus. If the focus computes to a natural
+                        --   number literal this returns a new literal, otherwise it builds a stack
+                        --   of @n@ calls to @suc@.
                     | PrimOpK QName ([Literal] -> Term) [Literal] [Pointer s] (Maybe FastCompiledClauses)
+                        -- ^ @PrimOpK f op lits es cc@. Evaluate the primitive function @f@ using
+                        --   the Haskell function @op@. @op@ gets a list of literal values in
+                        --   reverse order for the arguments of @f@ and computes the result as a
+                        --   term. The already computed arguments (in reverse order) are @lits@ and
+                        --   @es@ are the arguments that should be computed after the current focus.
+                        --   In case of built-in functions with corresponding Agda implementations,
+                        --   @cc@ contains the case tree.
                     | UpdateThunk [Pointer s]
-                    | ApplyK (Stack s) -- To allow thunk updates before elimination
+                        -- ^ @UpdateThunk ps@. Update the pointers @ps@ with the value of the
+                        --   current focus.
+                    | ApplyK (Stack s)
+                        -- ^ @ApplyK stack@. Apply the current focus to the eliminations in @stack@.
+                        --   This is used when a thunk needs to be updated with a partial
+                        --   application of a function.
 
 data Focus s = Eval (Closure s)
              | Match QName FastCompiledClauses (Stack s)
