@@ -557,7 +557,7 @@ clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
 type ControlStack s = [ControlFrame s]
 
-data ControlFrame s = CaseK QName ArgInfo (Closure s) (FastCase FastCompiledClauses) Int (Stack s) (Stack s)
+data ControlFrame s = CaseK QName ArgInfo (Closure s) (FastCase FastCompiledClauses) (Stack s) (Stack s)
                     | ForceK QName (Stack s) (Stack s)
                     | NatSucK Integer
                     | CatchAllK QName (Closure s) FastCompiledClauses (Stack s)
@@ -594,7 +594,7 @@ instance Pretty (Focus s) where
   prettyPrec p (Mismatch f)       = mparens (p > 9) $ text "⊥" <+> pretty (qnameName f)
 
 instance Pretty (ControlFrame s) where
-  prettyPrec p (CaseK f _ _ _ _ _ _)    = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
+  prettyPrec p (CaseK f _ _ _ _ _)    = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
   prettyPrec p (NoMatchK f _)           = mparens (p > 9) $ text "NoMatchK" <+> pretty (qnameName f)
   prettyPrec p (ForceK _ stack0 stack1) = mparens (p > 9) $ text "ForceK" <?> prettyList (toList $ stack0 >< stack1)
   prettyPrec _ (NatSucK n)              = text ("+" ++ show n)
@@ -868,7 +868,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
-    runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(CaseK f i cl0 bs n stack0 stack1 : ctrl)) =
+    runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(CaseK f i cl0 bs stack0 stack1 : ctrl)) =
       {-# SCC "runAM.CaseK" #-}
       case blk of
         Blocked{}    -> stuck
@@ -982,7 +982,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               [] -> done Underapplied
               -- apply elim: push the current match on the control stack and
               -- evaluate the argument
-              Apply e : stack1 -> evalPtr (unArg e) emptyStack $ CaseK f (argInfo e) cl0 bs n stack0 stack1 : ctrl
+              Apply e : stack1 -> evalPtr (unArg e) emptyStack $ CaseK f (argInfo e) cl0 bs stack0 stack1 : ctrl
               -- projection elim
               e@(Proj o p) : stack1 ->
                 case lookupCon p bs of
