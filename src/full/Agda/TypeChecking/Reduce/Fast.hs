@@ -412,9 +412,11 @@ clApply (Closure _ t env es) es' = Closure Unevaled t env (es <> es')
 data Pointer s = Pure (Closure s)
                  -- ^ Not a pointer. Used for closures that do not need to be shared to avoid
                  --   unnecessary updates.
-               | Pointer (STRef s (Thunk (Closure s)))
+               | Pointer (STPointer s)
                  -- ^ An actual pointer is an 'STRef' to a 'Thunk'. The thunk is set to 'BlackHole'
                  --   during the evaluation of its contents to make debugging loops easier.
+
+type STPointer s = STRef s (Thunk (Closure s))
 
 -- | A thunk is either a black hole or contains a value.
 data Thunk a = BlackHole | Thunk a
@@ -435,9 +437,8 @@ unsafeDerefPointer :: Pointer s -> Thunk (Closure s)
 unsafeDerefPointer (Pure x)    = Thunk x
 unsafeDerefPointer (Pointer p) = unsafePerformIO (unsafeSTToIO (readSTRef p))
 
-storePointer :: Pointer s -> Closure s -> ST s ()
-storePointer Pure{}        _   = return ()
-storePointer (Pointer ptr) !cl = writeSTRef ptr (Thunk cl)
+storePointer :: STPointer s -> Closure s -> ST s ()
+storePointer ptr !cl = writeSTRef ptr (Thunk cl)
     -- Note the strict match. To prevent leaking memory in case of unnecessary updates.
 
 blackHole :: Pointer s -> ST s ()
@@ -542,7 +543,7 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Stack 
                         --   @es@ are the arguments that should be computed after the current focus.
                         --   In case of built-in functions with corresponding Agda implementations,
                         --   @cc@ contains the case tree.
-                    | UpdateThunk [Pointer s]
+                    | UpdateThunk [STPointer s]
                         -- ^ @UpdateThunk ps@. Update the pointers @ps@ with the value of the
                         --   current focus.
                     | ApplyK (Stack s)
@@ -1028,8 +1029,9 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
 
     -- Add a UpdateThunk frame to the control stack. Pack consecutive updates into a single frame.
     updateThunkCtrl :: Pointer s -> ControlStack s -> ControlStack s
-    updateThunkCtrl p (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
-    updateThunkCtrl p                   ctrl  = UpdateThunk [p] : ctrl
+    updateThunkCtrl Pure{}                        ctrl  = ctrl
+    updateThunkCtrl (Pointer p) (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
+    updateThunkCtrl (Pointer p)                   ctrl  = UpdateThunk [p] : ctrl
 
     -- Only unfold delayed (corecursive) definitions if the result is being cased on.
     unfoldDelayed :: ControlStack s -> Bool
