@@ -568,7 +568,6 @@ data ControlFrame s = CaseK QName ArgInfo (Closure s) (FastCase FastCompiledClau
 
 data Focus s = Eval (Closure s)
              | Match QName (Closure s) FastCompiledClauses (Stack s)
-             | Mismatch QName
 
 type AM s = (Focus s, ControlStack s)
 
@@ -591,7 +590,6 @@ instance Pretty (Closure s) where
 instance Pretty (Focus s) where
   prettyPrec p (Eval cl)          = prettyPrec p cl
   prettyPrec p (Match _ cl cc st) = mparens (p > 9) $ (text "M" <?> prettyPrec 10 (clApply cl st)) <?> prettyPrec 10 cc
-  prettyPrec p (Mismatch f)       = mparens (p > 9) $ text "⊥" <+> pretty (qnameName f)
 
 instance Pretty (ControlFrame s) where
   prettyPrec p (CaseK f _ _ _ _ _)    = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
@@ -846,25 +844,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     runAM' (Eval cl@(Closure Value{} _ _ _), ApplyK stack : ctrl) =
       runAM (Eval (clApply cl stack), ctrl)
 
-    -- Fall-through handling
-    runAM' (Mismatch _, CatchAllK f cl0 cc stack : ctrl) =
-      runAM (Match f cl0 cc stack, ctrl)
-    runAM' (Mismatch{}, NoMatchK f cl : ctrl) = rewriteAM s'
-      where
-        s' = runReduce $ do
-          pds <- getPartialDefs
-          if elem f pds then return (Eval (mkValue (NotBlocked MissingClauses ()) cl), ctrl)
-                        else do
-            traceSLn "impossible" 10
-              ("Incomplete pattern matching when applying " ++ show f)
-              __IMPOSSIBLE__
-
     -- Impossible cases
     runAM' (Eval (Closure Value{} _ _ _), CatchAllK{} : _) =
       __IMPOSSIBLE__
     runAM' (Eval (Closure Value{} _ _ _), NoMatchK{} : _) =
-      __IMPOSSIBLE__
-    runAM' (Mismatch{}, _) =
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
@@ -910,8 +893,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               matchLitZero _ = id
 
           in case t of
-            Con c ci [] | isSuc c -> matchSuc c ci $ matchCatchall $ runAM nomatch
-            Con c ci [] -> matchCon c ci (length stack) $ matchCatchall $ runAM nomatch
+            Con c ci [] | isSuc c -> matchSuc c ci $ matchCatchall $ failedMatch ctrl
+            Con c ci [] -> matchCon c ci (length stack) $ matchCatchall $ failedMatch ctrl
 
             -- We can get here from a fallback (which builds a value without shifting args onto stack)
             Con c ci es -> do
@@ -920,9 +903,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
 
             -- Note: Literal natural number patterns are translated to suc-matches
             Lit (LitNat _ n) -> matchLitSuc n $ matchLitZero n
-                              $ matchCatchall $ runAM nomatch
+                              $ matchCatchall $ failedMatch ctrl
 
-            Lit l -> matchLit l $ matchCatchall $ runAM nomatch
+            Lit l -> matchLit l $ matchCatchall $ failedMatch ctrl
 
             _ -> stuck
       where
@@ -932,15 +915,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             blk' <- case blk of
                       Blocked{}      -> return blk
                       NotBlocked r _ -> decodeClosure_ cl <&> \ v -> NotBlocked (stuckOn (Apply $ Arg i v) r) ()
-            unwindStuckCase blk' ctrl
-
-        nomatch = (Mismatch f, ctrl)
+            stuckMatch blk' ctrl
 
     runAM' (Match f cl0 cc stack, ctrl) =
       {-# SCC "runAM.Match" #-}
       case cc of
         -- impossible case
-        FFail         -> unwindStuckCase (NotBlocked AbsurdMatch ()) ctrl
+        FFail         -> stuckMatch (NotBlocked AbsurdMatch ()) ctrl
         FDone xs body -> {-# SCC "runAM.FDone" #-} do
             -- Don't ask me why, but not being strict in the stack causes a memory leak.
             let (zs, env, !stack') = buildEnv xs stack
@@ -988,7 +969,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                 case lookupCon p bs of
                   Nothing -> done $ StuckOn (Proj o p) -- No case for the projection: stop
                   Just cc -> runAM (Match f cl0 cc (stack0 >< stack1), ctrl)
-      where done why = unwindStuckCase (NotBlocked why ()) ctrl
+      where done why = stuckMatch (NotBlocked why ()) ctrl
 
     evalClosure t env stack = Eval (Closure Unevaled t env stack)
 
@@ -1020,10 +1001,26 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
 
     -- When matching is stuck we find the 'NoMatchK' frame on the control stack
     -- and return it with the appropriate 'IsValue' set.
-    unwindStuckCase :: Blocked_ -> ControlStack s -> ST s (Blocked Term)
-    unwindStuckCase blk (NoMatchK _ cl : ctrl) = rewriteAM (Eval (mkValue blk cl), ctrl)
-    unwindStuckCase blk (CatchAllK{}   : ctrl) = unwindStuckCase blk ctrl
-    unwindStuckCase _ _ = __IMPOSSIBLE__
+    stuckMatch :: Blocked_ -> ControlStack s -> ST s (Blocked Term)
+    stuckMatch blk (NoMatchK _ cl : ctrl) = rewriteAM (Eval (mkValue blk cl), ctrl)
+    stuckMatch blk (CatchAllK{}   : ctrl) = stuckMatch blk ctrl
+    stuckMatch _ _ = __IMPOSSIBLE__
+
+    -- On a mismatch we find the the next 'CatchAllK' on the control stack and
+    -- continue matching from there. If there isn't one we get an incomplete
+    -- matching error (or get stuck if the function is marked partial).
+    failedMatch :: ControlStack s -> ST s (Blocked Term)
+    failedMatch (CatchAllK f cl0 cc stack : ctrl) =
+      runAM (Match f cl0 cc stack, ctrl)
+    failedMatch (NoMatchK f cl : ctrl) = rewriteAM s
+      where
+        s = runReduce $ do
+          pds <- getPartialDefs
+          if elem f pds
+            then return (Eval (mkValue (NotBlocked MissingClauses ()) cl), ctrl)
+            else traceSLn "impossible" 10 ("Incomplete pattern matching when applying " ++ show f)
+                          __IMPOSSIBLE__
+    failedMatch _ = __IMPOSSIBLE__
 
     rewriteAM :: AM s -> ST s (Blocked Term)
     rewriteAM = if hasRewriting then rewriteAM' else runAM
