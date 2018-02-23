@@ -488,18 +488,19 @@ lookupEnv i e | i < n     = Just (lookupEnv_ i e)
 
 -- * The Agda Abstract Machine
 
--- | The abstract machine state consists of a 'Focus' and a 'ControlStack'. The focus is what the
---   machine is currently working on, and the control stack contains the continuations for what to
---   do next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter. (TODO)
+-- | The abstract machine state has two states 'Eval' and 'Match' that determines what the machine
+--   is currently working on: evaluating a closure in the Eval state and matching a spine against a
+--   case tree in the Match state. Both states contain a 'ControlStack' of continuations for what to
+--   do next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter.
 data AM s = Eval (Closure s) !(ControlStack s)
-            -- ^ Evaluate the given closure to weak-head normal form. If the 'IsValue' field of
-            --   the closure is 'Value' we look at the control stack for what to do. Being strict in
-            --   the control stack is important! We can spend a lot of steps with unevaluated
-            --   closures (where we update, but don't look at the control stack). For instance, long
-            --   chains of 'suc' constructors.
+            -- ^ Evaluate the given closure (the focus) to weak-head normal form. If the 'IsValue'
+            --   field of the closure is 'Value' we look at the control stack for what to do. Being
+            --   strict in the control stack is important! We can spend a lot of steps with
+            --   unevaluated closures (where we update, but don't look at the control stack). For
+            --   instance, long chains of 'suc' constructors.
           | Match QName FastCompiledClauses (Spine s) (MatchStack s) (ControlStack s)
-            -- ^ @Match f cc spine ctrl@ Match the arguments @spine@ against the case tree @cc@.
-            --   The match stack contains a (possibly empty) list of 'CatchAll' frames and a
+            -- ^ @Match f cc spine stack ctrl@ Match the arguments @spine@ against the case tree
+            --   @cc@. The match stack contains a (possibly empty) list of 'CatchAll' frames and a
             --   closure to return in case of a stuck match.
 
 -- | The control stack contains a list of continuations, i.e. what to do with
@@ -523,11 +524,12 @@ data CatchAllFrame s = CatchAll FastCompiledClauses (Spine s)
 
 -- | Control frames are continuations that act on value closures.
 data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Spine s) (Spine s) (MatchStack s)
-                        -- ^ @CaseK f i bs spine0 spine1 mctrl@. Pattern match on the focus (with
+                        -- ^ @CaseK f i bs spine0 spine1 stack@. Pattern match on the focus (with
                         --   arg info @i@) using the @bs@ case tree. @f@ is the name of the function
                         --   doing the matching, and @spine0@ and @spine1@ are the values bound to
                         --   the pattern variables to the left and right (respectively) of the
-                        --   focus. (TODO)
+                        --   focus. The match stack contains catch-all cases we need to consider if
+                        --   this match fails.
                     | ForceK QName (Spine s) (Spine s)
                         -- ^ @ForceK f spine0 spine1@. Evaluating @primForce@ of the focus. @f@ is
                         --   the name of @primForce@ and is used to build the result if evaluation
