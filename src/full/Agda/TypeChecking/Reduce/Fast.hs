@@ -557,14 +557,14 @@ clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
 type ControlStack s = [ControlFrame s]
 
-data ControlFrame s = DoCase QName ArgInfo (Closure s) (FastCase FastCompiledClauses) Int (Stack s) (Stack s)
-                    | DoForce QName (Stack s) (Stack s)
-                    | NatSuc Integer
-                    | FallThrough QName (Closure s) FastCompiledClauses (Stack s)
-                    | EndCase QName (Closure s)
-                    | DoPrimOp QName ([Literal] -> Term) [Literal] [Pointer s] (Maybe FastCompiledClauses)
+data ControlFrame s = CaseK QName ArgInfo (Closure s) (FastCase FastCompiledClauses) Int (Stack s) (Stack s)
+                    | ForceK QName (Stack s) (Stack s)
+                    | NatSucK Integer
+                    | CatchAllK QName (Closure s) FastCompiledClauses (Stack s)
+                    | NoMatchK QName (Closure s)
+                    | PrimOpK QName ([Literal] -> Term) [Literal] [Pointer s] (Maybe FastCompiledClauses)
                     | UpdateThunk [Pointer s]
-                    | DoApply (Stack s) -- To allow thunk updates before elimination
+                    | ApplyK (Stack s) -- To allow thunk updates before elimination
 
 data Focus s = Eval (Closure s)
              | Match QName (Closure s) FastCompiledClauses (Stack s)
@@ -589,21 +589,21 @@ instance Pretty (Closure s) where
             tag = case isV of Value{} -> "V"; Unevaled -> "E"
 
 instance Pretty (Focus s) where
-  prettyPrec p (Eval cl)  = prettyPrec p cl
+  prettyPrec p (Eval cl)          = prettyPrec p cl
   prettyPrec p (Match _ cl cc st) = mparens (p > 9) $ (text "M" <?> prettyPrec 10 (clApply cl st)) <?> prettyPrec 10 cc
-  prettyPrec p (Mismatch f) = mparens (p > 9) $ text "⊥" <+> pretty (qnameName f)
+  prettyPrec p (Mismatch f)       = mparens (p > 9) $ text "⊥" <+> pretty (qnameName f)
 
 instance Pretty (ControlFrame s) where
-  prettyPrec p (DoCase f _ _ _ _ _ _)    = mparens (p > 9) $ text "DoCase" <+> pretty (qnameName f)
-  prettyPrec p (EndCase f _)             = mparens (p > 9) $ text "EndCase" <+> pretty (qnameName f)
-  prettyPrec p (DoForce _ stack0 stack1) = mparens (p > 9) $ text "DoForce" <?> prettyList (toList $ stack0 >< stack1)
-  prettyPrec _ (NatSuc n)                = text ("+" ++ show n)
-  prettyPrec p FallThrough{}             = text "FallThrough"
-  prettyPrec p (DoPrimOp f _ vs cls _)   = mparens (p > 9) $ sep [ text "DoPrimOp" <+> pretty f
-                                                                 , nest 2 $ prettyList vs
-                                                                 , nest 2 $ prettyList cls ]
-  prettyPrec p (UpdateThunk ps)          = mparens (p > 9) $ text "UpdateThunk" <+> text (show (length ps))
-  prettyPrec p (DoApply stack)           = mparens (p > 9) $ text "DoApply" <?> prettyList (toList stack)
+  prettyPrec p (CaseK f _ _ _ _ _ _)    = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
+  prettyPrec p (NoMatchK f _)           = mparens (p > 9) $ text "NoMatchK" <+> pretty (qnameName f)
+  prettyPrec p (ForceK _ stack0 stack1) = mparens (p > 9) $ text "ForceK" <?> prettyList (toList $ stack0 >< stack1)
+  prettyPrec _ (NatSucK n)              = text ("+" ++ show n)
+  prettyPrec p CatchAllK{}              = text "CatchAllK"
+  prettyPrec p (PrimOpK f _ vs cls _)   = mparens (p > 9) $ sep [ text "PrimOpK" <+> pretty f
+                                                                , nest 2 $ prettyList vs
+                                                                , nest 2 $ prettyList cls ]
+  prettyPrec p (UpdateThunk ps)         = mparens (p > 9) $ text "UpdateThunk" <+> text (show (length ps))
+  prettyPrec p (ApplyK stack)           = mparens (p > 9) $ text "ApplyK" <?> prettyList (toList stack)
 
 compile :: Term -> AM s
 compile t = (Eval (Closure Unevaled t emptyEnv emptyStack), [])
@@ -648,7 +648,6 @@ elimsToStack env es = do
 
 reduceTm :: ReduceEnv -> (QName -> CompactDef) -> Bool -> Bool -> BuiltinEnv -> Term -> Blocked Term
 reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . traceDoc (text "-- fast reduce --")
-    -- fmap valueToTerm . reduceB' 0 . termToValue
   where
     BuiltinEnv{ bZero = zero, bSuc = suc } = bEnv
 
@@ -656,8 +655,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     getMeta m = maybe __IMPOSSIBLE__ mvInstantiation (Map.lookup m metaStore)
 
     sucCtrl :: ControlStack s -> ControlStack s
-    sucCtrl (NatSuc n : ctrl) = (NatSuc $! n + 1) : ctrl
-    sucCtrl ctrl              = NatSuc 1 : ctrl
+    sucCtrl (NatSucK n : ctrl) = (NatSucK $! n + 1) : ctrl
+    sucCtrl ctrl              = NatSucK 1 : ctrl
 
     updateThunk :: Pointer s -> ControlStack s -> ControlStack s
     updateThunk p (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
@@ -707,24 +706,25 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
           let CompactDef{ cdefDelayed        = delayed
                         , cdefNonterminating = nonterm
                         , cdefDef            = def } = constInfo f
-              unfoldDelayed | DoCase{} : _ <- ctrl = True   -- only unfold delayed if there's a match on the stack
-                            | otherwise            = False
+              unfoldDelayed | CaseK{} : _ <- ctrl = True   -- only unfold delayed if there's a match on the stack
+                            | otherwise           = False
               dontUnfold = (nonterm && not allowNonTerminating) ||
                            (delayed && not unfoldDelayed)
           in case def of
             CFun{ cfunCompiled = cc }
               | dontUnfold -> runAM done
-              | otherwise  -> runAM (Match f cl0 cc stack, EndCase f cl : ctrl)
-              where cl0 = Closure Unevaled t emptyEnv emptyStack
+              | otherwise  -> runAM (Match f (Closure Unevaled t emptyEnv emptyStack) cc stack,
+                                     NoMatchK f cl : ctrl)
             CAxiom         -> rewriteAM done
             CTyCon         -> rewriteAM done
             CCon{}         -> runAM done   -- Only happens for builtinSharp (which is a Def when you bind it)
             COther         -> fallback s
             CForce | (stack0, Apply v : stack1) <- splitStack 4 stack ->
-              evalPtr (unArg v) emptyStack (DoForce f stack0 stack1 : ctrl)
+              evalPtr (unArg v) emptyStack (ForceK f stack0 stack1 : ctrl)
             CForce -> runAM done
-            CPrimOp n op cc | length stack == n, Just (v : vs) <- allApplyElims (toList stack) ->
-              evalPtr (unArg v) emptyStack (DoPrimOp f op [] (map unArg vs) cc : ctrl)
+            CPrimOp n op cc | length stack == n,
+                              Just (v : vs) <- allApplyElims (toList stack) ->
+              evalPtr (unArg v) emptyStack (PrimOpK f op [] (map unArg vs) cc : ctrl)
             CPrimOp{} -> runAM done  -- partially applied
 
         -- Nat zero
@@ -780,9 +780,9 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               runAM (evalClosure t env0 (stack' >< stack), ctrl)
 
     -- +k continuations
-    runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSuc m : ctrl) =
+    runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSucK m : ctrl) =
       runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) emptyEnv emptyStack, ctrl)
-    runAM' (Eval cl, NatSuc m : ctrl) =
+    runAM' (Eval cl, NatSucK m : ctrl) =
         runAM (Eval (mkValue (notBlocked ()) $ plus m cl), ctrl)
       where
         plus 0 cl = cl
@@ -792,14 +792,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
           where arg = pureThunk (plus (n - 1) cl)
 
     -- builtin functions
-    runAM' (Eval (Closure _ (Lit a) _ _), DoPrimOp f op vs es cc : ctrl) =
+    runAM' (Eval (Closure _ (Lit a) _ _), PrimOpK f op vs es cc : ctrl) =
       case es of
         []      -> runAM (evalValueNoBlk (op (a : vs)) emptyEnv emptyStack, ctrl)
-        e : es' -> evalPtr e emptyStack (DoPrimOp f op (a : vs) es' cc : ctrl)
-    runAM' (Eval cl@(Closure (Value blk) _ _ _), DoPrimOp f _ vs es mcc : ctrl) =
+        e : es' -> evalPtr e emptyStack (PrimOpK f op (a : vs) es' cc : ctrl)
+    runAM' (Eval cl@(Closure (Value blk) _ _ _), PrimOpK f _ vs es mcc : ctrl) =
       case mcc of
         Nothing -> rewriteAM (Eval stuck, ctrl) -- Not a literal and no clauses: stuck
-        Just cc -> runAM (Match f cl0 cc stack, EndCase f (clApply cl0 stack) : ctrl)
+        Just cc -> runAM (Match f cl0 cc stack, NoMatchK f (clApply cl0 stack) : ctrl)
       where                                     -- otherwise try the clauses on non-literal
         p         = pureThunk cl
         lits      = stackFromList $ map (pureThunk . litClos) (reverse vs)
@@ -809,7 +809,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         litClos l = valueNoBlk (Lit l) emptyEnv emptyStack
 
     -- primForce
-    runAM' (Eval arg@(Closure (Value blk) t _ _), DoForce pf stack0 stack1 : ctrl)
+    runAM' (Eval arg@(Closure (Value blk) t _ _), ForceK pf stack0 stack1 : ctrl)
       | isWHNF t =
         case stack1 of
           Apply k : stack' ->
@@ -843,13 +843,13 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
     -- Thunk update
     runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk ps : ctrl) =
       mapM_ (`storePointer` cl) ps >> runAM (Eval cl, ctrl)
-    runAM' (Eval cl@(Closure Value{} _ _ _), DoApply stack : ctrl) =
+    runAM' (Eval cl@(Closure Value{} _ _ _), ApplyK stack : ctrl) =
       runAM (Eval (clApply cl stack), ctrl)
 
     -- Fall-through handling
-    runAM' (Mismatch _, FallThrough f cl0 cc stack : ctrl) =
+    runAM' (Mismatch _, CatchAllK f cl0 cc stack : ctrl) =
       runAM (Match f cl0 cc stack, ctrl)
-    runAM' (Mismatch{}, EndCase f cl : ctrl) = rewriteAM s'
+    runAM' (Mismatch{}, NoMatchK f cl : ctrl) = rewriteAM s'
       where
         s' = runReduce $ do
           pds <- getPartialDefs
@@ -860,16 +860,16 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               __IMPOSSIBLE__
 
     -- Impossible cases
-    runAM' (Eval (Closure Value{} _ _ _), FallThrough{} : _) =
+    runAM' (Eval (Closure Value{} _ _ _), CatchAllK{} : _) =
       __IMPOSSIBLE__
-    runAM' (Eval (Closure Value{} _ _ _), EndCase{} : _) =
+    runAM' (Eval (Closure Value{} _ _ _), NoMatchK{} : _) =
       __IMPOSSIBLE__
     runAM' (Mismatch{}, _) =
       __IMPOSSIBLE__
 
     -- Pattern matching against a value
-    runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(DoCase f i cl0 bs n stack0 stack1 : ctrl)) =
-      {-# SCC "runAM.DoCase" #-}
+    runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(CaseK f i cl0 bs n stack0 stack1 : ctrl)) =
+      {-# SCC "runAM.CaseK" #-}
       case blk of
         Blocked{}    -> stuck
         NotBlocked{} ->
@@ -878,7 +878,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               -- Push catch-all frame if there is a catch-all
               ctrlCA = case fcatchAllBranch bs of
                 Nothing -> ctrl
-                Just cc -> FallThrough f cl0 cc stack' : ctrl
+                Just cc -> CatchAllK f cl0 cc stack' : ctrl
 
               -- Matching constructor
               matchCon c ci ar = lookupCon (conName c) bs =>? \ cc ->
@@ -951,14 +951,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
                 runAM (Eval (clApply cl stack'), ctrl')
               _ -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
           where
-            matchy FallThrough{} = True
-            matchy EndCase{}     = True
-            matchy DoCase{}      = False
-            matchy DoForce{}     = False
-            matchy NatSuc{}      = False
-            matchy DoPrimOp{}    = False
+            matchy CatchAllK{}   = True
+            matchy NoMatchK{}    = True
+            matchy CaseK{}       = False
+            matchy ForceK{}      = False
+            matchy NatSucK{}     = False
+            matchy PrimOpK{}     = False
             matchy UpdateThunk{} = False
-            matchy DoApply{}     = False
+            matchy ApplyK{}      = False
 
         FEta n fs cc ca ->
           let (stack0, st) = splitStack n stack in
@@ -966,11 +966,11 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             []               -> done Underapplied
             Apply e : stack1 -> do
               -- Replace e by its projections on the stack. And don't forget a
-              -- FallThrough frame if there's a catch-all.
+              -- CatchAllK frame if there's a catch-all.
               let projClosure f = Closure Unevaled (Var 0 []) (extendEnv (unArg e) emptyEnv) [Proj ProjSystem f]
               projs <- mapM (createThunk . projClosure) fs
               let stack' = stack0 >< map (Apply . defaultArg) projs >< stack1
-                  ctrl'  = caseMaybe ca ctrl $ \ cc -> FallThrough f cl0 cc stack : ctrl
+                  ctrl'  = caseMaybe ca ctrl $ \ cc -> CatchAllK f cl0 cc stack : ctrl
               runAM (Match f cl0 cc stack', ctrl')
             _ -> __IMPOSSIBLE__
 
@@ -982,7 +982,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
               [] -> done Underapplied
               -- apply elim: push the current match on the control stack and
               -- evaluate the argument
-              Apply e : stack1 -> evalPtr (unArg e) emptyStack $ DoCase f (argInfo e) cl0 bs n stack0 stack1 : ctrl
+              Apply e : stack1 -> evalPtr (unArg e) emptyStack $ CaseK f (argInfo e) cl0 bs n stack0 stack1 : ctrl
               -- projection elim
               e@(Proj o p) : stack1 ->
                 case lookupCon p bs of
@@ -1015,14 +1015,14 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
         BlackHole -> __IMPOSSIBLE__
         Thunk cl@(Closure Unevaled _ _ _) -> do
           blackHole p
-          runAM (Eval cl, updateThunk p $ [DoApply stack | not $ isEmptyStack stack] ++ ctrl)
+          runAM (Eval cl, updateThunk p $ [ApplyK stack | not $ isEmptyStack stack] ++ ctrl)
         Thunk cl -> runAM (Eval (clApply cl stack), ctrl)
 
-    -- When matching is stuck we find the 'EndCase' frame on the control stack
+    -- When matching is stuck we find the 'NoMatchK' frame on the control stack
     -- and return it with the appropriate 'IsValue' set.
     unwindStuckCase :: Blocked_ -> ControlStack s -> ST s (Blocked Term)
-    unwindStuckCase blk (EndCase _ cl  : ctrl) = rewriteAM (Eval (mkValue blk cl), ctrl)
-    unwindStuckCase blk (FallThrough{} : ctrl) = unwindStuckCase blk ctrl
+    unwindStuckCase blk (NoMatchK _ cl : ctrl) = rewriteAM (Eval (mkValue blk cl), ctrl)
+    unwindStuckCase blk (CatchAllK{}   : ctrl) = unwindStuckCase blk ctrl
     unwindStuckCase _ _ = __IMPOSSIBLE__
 
     rewriteAM :: AM s -> ST s (Blocked Term)
