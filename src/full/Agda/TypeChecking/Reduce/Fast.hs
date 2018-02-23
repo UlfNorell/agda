@@ -5,33 +5,11 @@
 
 {-|
 
-This module contains an optimised implementation of the reduction algorithm
-from 'Agda.TypeChecking.Reduce' and 'Agda.TypeChecking.CompiledClause.Match'.
-It runs roughly an order of magnitude faster than the original implementation.
+The Agda Abstract Machine.
 
-The differences are the following:
+...
 
-- Only applies when we don't have --sharing and when all reductions are
-  allowed.
-
-  This means we can skip a number of checks that would otherwise be performed
-  at each reduction step.
-
-- Does not track whether simplifications were made.
-
-  This information is only used when trying to simplify terms, so the
-  simplifier runs the slow implementation.
-
-- Precomputes primZero and primSuc.
-
-  Since all the functions involved in reduction are implemented in this module
-  in a single where block, we can look up zero and suc once instead of once for
-  each reduction step.
-
-- Run outside ReduceM
-
-  ReduceM is already just a plain reader monad, but pulling out the environment
-  and doing all reduction non-monadically saves a significant amount of time.
+Some other tricks that improves performance:
 
 - Memoise getConstInfo.
 
@@ -52,13 +30,6 @@ The differences are the following:
   None of these changes would make sense to incorporate into the actual case
   trees. The first two loses information that we need in other places and the
   third would complicate a lot of code working with case trees.
-
-- Optimised parallel substitution.
-
-  When substituting arguments into function bodies we always have a complete
-  (a term for every free variable) parallel substitution. We run an specialised
-  substitution for this case that falls back to normal substitution when it
-  hits a binder.
 
 -}
 module Agda.TypeChecking.Reduce.Fast
@@ -512,8 +483,8 @@ lookupEnv i e | i < n     = Just (lookupEnv_ i e)
 -- * The Agda Abstract Machine
 
 -- | The abstract machine state consists of a 'Focus' and a 'ControlStack'. The focus is what the
---   machine is currently working on and the control stack contains the continuations for what to do
---   next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter.
+--   machine is currently working on, and the control stack contains the continuations for what to
+--   do next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter.
 type AM s = (Focus s, ControlStack s)
 
 -- | The current focus of the abstract machine.
@@ -574,10 +545,13 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Stack 
 
 -- * Compilation and decoding
 
+-- | The initial abstract machine state. Wrap the term to be evaluated in an empty closure. Note
+--   that free variables of the term are treated as constants by the abstract machine.
 compile :: Term -> AM s
 compile t = (Eval (Closure Unevaled t emptyEnv []), [])
 
--- | For some reason...
+-- | The abstract machine treats uninstantiated meta-variables as blocked, but the rest of Agda does
+--   not.
 topMetaIsNotBlocked :: Blocked Term -> Blocked Term
 topMetaIsNotBlocked (Blocked _ t@MetaV{}) = notBlocked t
 topMetaIsNotBlocked b = b
@@ -591,6 +565,10 @@ decodeStack s = (traverse . traverse) decodePointer s
 decodeClosure_ :: Closure s -> ST s Term
 decodeClosure_ = ignoreBlocking <.> decodeClosure
 
+-- | Turning an abstract machine closure back into a term. This happens in two cases:
+--    * when reduction is finished and we return the weak-head normal term to the outside world.
+--    * when the abstract machine encounters something it cannot handle and falls back to the slow
+--      reduction engine
 decodeClosure :: Closure s -> ST s (Blocked Term)
 decodeClosure (Closure isV t env stack) = do
     -- Note: it's important to be lazy in the stack and environment here. Hence the
@@ -600,22 +578,27 @@ decodeClosure (Closure isV t env stack) = do
     return $ topMetaIsNotBlocked (applyE (applySubst (parS vs) t) es <$ b)
   where
     parS = foldr (:#) IdS  -- parallelS is too strict
-    b = case isV of Value b  -> b
-                    Unevaled -> notBlocked ()
+    b    = case isV of
+             Value b  -> b
+             Unevaled -> notBlocked ()  -- only when falling back to slow reduce in which case the
+                                        -- blocking tag is immediately discarded
 
+-- | Turn a list of internal syntax eliminations into a stack. This builds closures and allocates
+--   thunks for all the 'Apply' elims.
 elimsToStack :: Env s -> Elims -> ST s (Stack s)
 elimsToStack env es = do
     stack <- (traverse . traverse) createThunk closures
-    seq (forceStack stack) (return stack)
+    forceStack stack `seq` return stack
   where
     closures = (map . fmap) (mkClosure env) es
 
     -- Need to be strict in mkClosure to avoid memory leak
     forceStack = foldl (\ () -> forceEl) ()
     forceEl (Apply (Arg _ (Pure Closure{}))) = ()
-    forceEl (Apply (Arg _ (Pointer p))) = ()
-    forceEl _ = ()
+    forceEl (Apply (Arg _ (Pointer{})))      = ()
+    forceEl _                                = ()
 
+    -- Dropping the environment for naked defs and cons is mostly to make debug traces less verbose.
     mkClosure _   t@(Def f [])   = Closure Unevaled t emptyEnv []
     mkClosure _   t@(Con c i []) = Closure Unevaled t emptyEnv []
     mkClosure env t              = Closure Unevaled t env []
