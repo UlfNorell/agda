@@ -678,8 +678,7 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     -- The main function. This is where the stuff happens!
     runAM' :: AM s -> ST s (Blocked Term)
 
-    -- The base case: The focus is a value closure and the control stack is empty. Decode and
-    -- return.
+    -- Base case: The focus is a value closure and the control stack is empty. Decode and return.
     runAM' (Eval cl@(Closure Value{} _ _ _), []) = decodeClosure cl
 
     -- Unevaluated closure: inspect the term and take the appropriate action. For instance,
@@ -712,20 +711,22 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
             CForce | (stack0, Apply v : stack1) <- splitAt 4 stack ->
               evalPointerAM (unArg v) [] (ForceK f stack0 stack1 : ctrl)
             CForce -> runAM done
-            CPrimOp n op cc | length stack == n,
-                              Just (v : vs) <- allApplyElims stack ->
+            CPrimOp n op cc | length stack == n,                      -- PrimOps can't be over-applied. They don't
+                              Just (v : vs) <- allApplyElims stack -> -- return functions or records.
               evalPointerAM (unArg v) [] (PrimOpK f op [] (map unArg vs) cc : ctrl)
             CPrimOp{} -> runAM done  -- partially applied
             COther    -> fallbackAM s
 
-        -- Nat zero
+        -- Case: zero. Return value closure with literal 0.
         Con c i [] | isZero c ->
-          runAM (evalValueNoBlk (Lit (LitNat noRange 0)) emptyEnv stack, ctrl)
+          runAM (evalTrueValue (Lit (LitNat noRange 0)) emptyEnv stack, ctrl)
 
-        -- Nat suc
+        -- Case: suc. Suc is strict in its argument to make sure we return a literal whenever
+        -- possible. Push a 'NatSucK' frame on the control stack and evaluate the argument.
         Con c i [] | isSuc c, Apply v : _ <- stack ->
           evalPointerAM (unArg v) [] (sucCtrl ctrl)
 
+        -- Case: constructor. Perform beta reduction if projected from, otherwise return a value.
         Con c i [] ->
           case splitAt ar stack of
             (args, Proj _ p : stack') -> evalPointerAM (unArg arg) stack' ctrl
@@ -733,23 +734,27 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
                 fields    = conFields c
                 Just n    = List.elemIndex p fields
                 Apply arg = args !! n
-            _ -> rewriteAM (evalValueNoBlk (Con c' i []) env stack, ctrl)
+            _ -> rewriteAM (evalTrueValue (Con c' i []) env stack, ctrl)
           where CCon{cconSrcCon = c', cconArity = ar} = cdefDef (constInfo (conName c))
 
+        -- Case: variable. Look up the variable in the environment and evaluate the resulting
+        -- pointer. If the variable is not in the environment it's a free variable and we adjust the
+        -- deBruijn index appropriately.
         Var x []   ->
           case lookupEnv x env of
             Nothing -> runAM (evalValue (notBlocked ()) (Var (x - envSize env) []) emptyEnv stack, ctrl)
             Just p  -> evalPointerAM p stack ctrl
 
+        -- Case: metavariable. If it's instantiated evaluate the value. Meta instantiations are open
+        -- terms with a specified list of free variables. buildEnv constructs the appropriate
+        -- environment for the closure.
         MetaV m [] ->
           case getMeta m of
             InstV xs t -> runAM (evalClosure (lams zs t) env stack', ctrl)
               where (zs, env, !stack') = buildEnv xs stack
             _ -> runAM (Eval (mkValue (blocked m ()) cl), ctrl)
 
-        Lit{} -> runAM done
-        Pi{}  -> runAM done
-
+        -- Case: lambda. Perform the beta reduction if applied. Otherwise it's a value.
         Lam h b ->
           case stack of
             Apply v : stack' ->
@@ -759,71 +764,89 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
             [] -> runAM done
             _ -> __IMPOSSIBLE__
 
+        -- Case: values. Literals and function types are already in weak-head normal form.
+        Lit{} -> runAM done
+        Pi{}  -> runAM done
+
+        -- Case: non-empty spine. If the focused term has a non-empty spine, we shift the
+        -- eliminations onto the stack.
         Def f   es -> shiftElims (Def f   []) emptyEnv env es
         Con c i es -> shiftElims (Con c i []) emptyEnv env es
         Var x   es -> shiftElims (Var x   []) env      env es
         MetaV m es -> shiftElims (MetaV m []) emptyEnv env es
 
+        -- Case: unsupported. These terms are not handled by the abstract machine, so we fall back
+        -- to slowReduceTerm for these.
         Level{}    -> fallbackAM s
         Sort{}     -> fallbackAM s
         Shared{}   -> fallbackAM s
         DontCare{} -> fallbackAM s
 
-        -- _ -> fallbackAM s
       where done = (Eval $ mkValue (notBlocked ()) cl, ctrl)
             shiftElims t env0 env es = do
               stack' <- elimsToStack env es
               runAM (evalClosure t env0 (stack' <> stack), ctrl)
 
-    -- +k continuations
+    -- If the current focus is a value closure, we look at the control stack.
+
+    -- Case: NatSucK m
+
+    -- If literal add m to the literal,
     runAM' (Eval cl@(Closure Value{} (Lit (LitNat r n)) _ _), NatSucK m : ctrl) =
-      runAM (evalValueNoBlk (Lit $! LitNat r $! m + n) emptyEnv [], ctrl)
+      runAM (evalTrueValue (Lit $! LitNat r $! m + n) emptyEnv [], ctrl)
+
+    -- otherwise apply 'suc' m times.
     runAM' (Eval cl, NatSucK m : ctrl) =
         runAM (Eval (mkValue (notBlocked ()) $ plus m cl), ctrl)
       where
         plus 0 cl = cl
         plus n cl =
-          valueNoBlk (Con (fromJust suc) ConOSystem []) emptyEnv $
+          trueValue (Con (fromJust suc) ConOSystem []) emptyEnv $
                      Apply (defaultArg arg) : []
           where arg = pureThunk (plus (n - 1) cl)
 
-    -- builtin functions
+    -- Case: PrimOpK
+
+    -- If literal apply the primitive function if no more arguments, otherwise
+    -- store the literal in the continuation and evaluate the next argument.
     runAM' (Eval (Closure _ (Lit a) _ _), PrimOpK f op vs es cc : ctrl) =
       case es of
-        []      -> runAM (evalValueNoBlk (op (a : vs)) emptyEnv [], ctrl)
+        []      -> runAM (evalTrueValue (op (a : vs)) emptyEnv [], ctrl)
         e : es' -> evalPointerAM e [] (PrimOpK f op (a : vs) es' cc : ctrl)
+
+    -- If not a literal we use the case tree if there is one, otherwise we are stuck.
     runAM' (Eval cl@(Closure (Value blk) _ _ _), PrimOpK f _ vs es mcc : ctrl) =
       case mcc of
-        Nothing -> rewriteAM (Eval stuck, ctrl) -- Not a literal and no clauses: stuck
+        Nothing -> rewriteAM (Eval stuck, ctrl)
         Just cc -> runAM (Match f cc stack, NoMatchK f notstuck : ctrl)
-      where                                     -- otherwise try the clauses on non-literal
+      where
         p         = pureThunk cl
         lits      = map (pureThunk . litClos) (reverse vs)
         stack     = fmap (Apply . defaultArg) $ lits <> [p] <> es
         stuck     = Closure (Value blk) (Def f []) emptyEnv stack
         notstuck  = Closure Unevaled    (Def f []) emptyEnv stack
-        litClos l = valueNoBlk (Lit l) emptyEnv []
+        litClos l = trueValue (Lit l) emptyEnv []
 
-    -- primForce
+    -- Case: ForceK. Here we need to check if the argument is a canonical form (i.e. not a variable
+    -- or stuck function call) and if so apply the function argument to the value. If it's not
+    -- canonical we are stuck.
     runAM' (Eval arg@(Closure (Value blk) t _ _), ForceK pf stack0 stack1 : ctrl)
-      | isWHNF t =
+      | isCanonical t =
         case stack1 of
           Apply k : stack' ->
-            evalPointerAM (unArg k) (Apply (defaultArg argPtr) : stack') ctrl
-          [] -> do
-            -- primForce arg = λ k → k arg    (if whnf arg)
-            let lam x = Lam defaultArgInfo . Abs x
-                env   = argPtr `extendEnv` emptyEnv
-            runAM (evalClosure (lam "k" $ Var 0 [Apply $ defaultArg $ Var 1 []])
-                               env [], ctrl)
+            evalPointerAM (unArg k) (elim : stack') ctrl
+          [] -> -- Partial application of primForce to canonical argument, return λ k → k arg.
+            runAM (evalTrueValue (lam (defaultArg "k") $ Var 0 [Apply $ defaultArg $ Var 1 []])
+                                 (argPtr `extendEnv` emptyEnv) [], ctrl)
           _ -> __IMPOSSIBLE__
       | otherwise = rewriteAM (Eval stuck, ctrl)
       where
         argPtr = pureThunk arg
-        stack' = stack0 <> [Apply $ defaultArg argPtr] <> stack1
+        elim   = Apply (defaultArg argPtr)
+        stack' = stack0 <> [elim] <> stack1
         stuck  = Closure (Value blk) (Def pf []) emptyEnv stack'
 
-        isWHNF u = case u of
+        isCanonical u = case u of
           Lit{}      -> True
           Con{}      -> True
           Lam{}      -> True
@@ -833,97 +856,124 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
           DontCare{} -> True
           MetaV{}    -> False
           Var{}      -> False
-          Def q _  -- Type constructors (data/record) are considered normal for 'primForce'.
+          Def q _  -- Type constructors (data/record) are considered canonical for 'primForce'.
             | CTyCon <- cdefDef (constInfo q) -> True
             | otherwise                       -> False
           Shared{}   -> __IMPOSSIBLE__
 
-    -- Thunk update
+    -- Case: UpdateThunk. Write the value to the pointers in the UpdateThunk frame.
     runAM' (Eval cl@(Closure Value{} _ _ _), UpdateThunk ps : ctrl) =
       mapM_ (`storePointer` cl) ps >> runAM (Eval cl, ctrl)
+
+    -- Case: ApplyK. Application after thunk update. Add the stack from the control frame to the
+    -- closure.
     runAM' (Eval cl@(Closure Value{} _ _ _), ApplyK stack : ctrl) =
       runAM (Eval (clApply cl stack), ctrl)
 
-    -- Impossible cases
-    runAM' (Eval (Closure Value{} _ _ _), CatchAllK{} : _) =
-      __IMPOSSIBLE__
-    runAM' (Eval (Closure Value{} _ _ _), NoMatchK{} : _) =
-      __IMPOSSIBLE__
-
-    -- Pattern matching against a value
+    -- Case: CaseK. Pattern matching against a value. If it's a stuck value the pattern match is
+    -- stuck and we find the NoMatchK frame and return (see stuckMatch). Otherwise we need to find
+    -- a matching branch switch to the Match state. If there is no matching branch we look for a
+    -- CatchAllK on the control stack, or fail if there isn't one (see failedMatch).
+    -- If the current branches contain a catch-all case we need to push a CatchAllK on the control
+    -- stack when picking one of the other branches.
     runAM' (Eval cl@(Closure (Value blk) t env stack), ctrl0@(CaseK f i bs stack0 stack1 : ctrl)) =
       {-# SCC "runAM.CaseK" #-}
       case blk of
-        Blocked{}    -> stuck
+        Blocked{}    -> stuck -- we might as well check the blocking tag first
         NotBlocked{} ->
-          let p      = pureThunk cl
+          let p      = pureThunk cl -- cl is already a value so no need to thunk it.
               stack' = stack0 <> [Apply $ Arg i p] <> stack1
               -- Push catch-all frame if there is a catch-all
               ctrlCA = case fcatchAllBranch bs of
                 Nothing -> ctrl
                 Just cc -> CatchAllK f cc stack' : ctrl
 
-              -- Matching constructor
+              -- The matchX functions below all take an extra argument which is what to do if there
+              -- is no appropriate branch in the case tree. ifJust is maybe with a different
+              -- argument order letting you leave out the Nothing case.
+              (m `ifJust` f) z = maybe z f m
+
+              -- Matching constructor: Switch to the Match state, inserting the constructor argument
+              -- in the stack between stack0 and stack1.
               matchCon c ci ar = lookupCon (conName c) bs `ifJust` \ cc ->
                 runAM (Match f cc (stack0 <> stack <> stack1), ctrlCA)
 
-              -- Catch-all
+              -- Catch-all: Don't add a CatchAllK frame since this _is_ the catch-all.
               matchCatchall = fcatchAllBranch bs `ifJust` \ cc ->
-                runAM (Match f cc stack', ctrl) -- Not ctrlCA, since this _is_ the catch-all
+                runAM (Match f cc stack', ctrl)
 
-              -- Matching literal
+              -- Matching literal: Switch to the Match state. There are no arguments to add to the
+              -- stack.
               matchLit l = Map.lookup l (flitBranches bs) `ifJust` \ cc ->
                 runAM (Match f cc (stack0 <> stack1), ctrlCA)
 
-              -- Matching a constructor against 'suc'
+              -- Matching a constructor against 'suc': Insert the argument in the stack.
               matchSuc c ci | isSuc c =
                 fsucBranch bs `ifJust` \ cc ->
                   runAM (Match f cc (stack0 <> stack <> stack1), ctrlCA)
               matchSuc _ _ = id
 
-              -- Matching a literal against 'suc'
-              matchLitSuc n | n <= 0 = id
+              -- Matching a non-zero natural number literal: Subtract one from the literal and
+              -- insert it in the stack for the Match state.
               matchLitSuc n = fsucBranch bs `ifJust` \ cc ->
                   runAM (Match f cc (stack0 <> [Apply $ defaultArg arg] <> stack1), ctrlCA)
                 where n'  = n - 1
-                      arg = {-# SCC "matchLitSuc.arg" #-} pureThunk $ valueNoBlk (Lit $ LitNat noRange n') emptyEnv []
+                      arg = pureThunk $ trueValue (Lit $ LitNat noRange n') emptyEnv []
 
-              -- Matching 'zero'
-              matchLitZero n | n == 0, Just z <- zero = matchCon z ConOSystem 0
-              matchLitZero _ = id
+              -- Matching a literal 0. Simple calls matchCon with the zero constructor.
+              matchLitZero | Just z <- zero = matchCon z ConOSystem 0
+                           | otherwise      = id
 
           in case t of
+            -- Case: suc constructor
             Con c ci [] | isSuc c -> matchSuc c ci $ matchCatchall $ failedMatch ctrl
+
+            -- Case: constructor
             Con c ci [] -> matchCon c ci (length stack) $ matchCatchall $ failedMatch ctrl
 
-            -- We can get here from a fallback (which builds a value without shifting args onto stack)
+            -- Case: non-empty elims. We can get here from a fallback (which builds a value without
+            -- shifting arguments onto stack)
             Con c ci es -> do
               stack' <- elimsToStack env es
               runAM (evalValue blk (Con c ci []) emptyEnv (stack' <> stack), ctrl0)
 
-            -- Note: Literal natural number patterns are translated to suc-matches
-            Lit (LitNat _ n) -> matchLitSuc n $ matchLitZero n
-                              $ matchCatchall $ failedMatch ctrl
+            -- Case: natural number literals. Literal natural number patterns are translated to
+            -- suc-matches, so there is no need to try matchLit.
+            Lit (LitNat _ 0) -> matchLitZero  $ matchCatchall $ failedMatch ctrl
+            Lit (LitNat _ n) -> matchLitSuc n $ matchCatchall $ failedMatch ctrl
 
+            -- Case: literal
             Lit l -> matchLit l $ matchCatchall $ failedMatch ctrl
 
+            -- Case: not constructor or literal. In this case we are stuck.
             _ -> stuck
       where
-        (m `ifJust` f) z = maybe z f m
         stuck = do
-            -- Compute new reason for being stuck. See
-            -- Agda.Syntax.Internal.stuckOn for the logic.
+            -- Compute new reason for being stuck. See Agda.Syntax.Internal.stuckOn for the logic.
             blk' <- case blk of
                       Blocked{}      -> return blk
                       NotBlocked r _ -> decodeClosure_ cl <&> \ v -> NotBlocked (stuckOn (Apply $ Arg i v) r) ()
             stuckMatch blk' ctrl
 
-    runAM' (Match f cc stack, ctrl) =
-      {-# SCC "runAM.Match" #-}
+    -- Impossible cases: CatchAllK and NoMatchK only appear with Match focus.
+    runAM' (Eval (Closure Value{} _ _ _), CatchAllK{} : _) =
+      __IMPOSSIBLE__
+    runAM' (Eval (Closure Value{} _ _ _), NoMatchK{} : _) =
+      __IMPOSSIBLE__
+
+    -- Case: Match focus. Here we look at the case tree and take the appropriate action:
+    --   - FFail: stuck
+    --   - FDone: evaluate body
+    --   - FEta: eta expand argument
+    --   - FCase on projection: pick corresponding branch and keep matching
+    --   - FCase on argument: push CaseK frame on control stack and evaluate argument
+    runAM' (Match f cc stack, ctrl) = {-# SCC "runAM.Match" #-}
       case cc of
-        -- impossible case
+        -- Absurd match. You can get here for open terms.
         FFail         -> stuckMatch (NotBlocked AbsurdMatch ()) ctrl
-        FDone xs body -> {-# SCC "runAM.FDone" #-} do
+
+        -- Matching complete. Compute the environment for the body and switch to the Eval state.
+        FDone xs body -> do
             -- Don't ask me why, but not being strict in the stack causes a memory leak.
             let (zs, env, !stack') = buildEnv xs stack
                 ctrl'              = dropWhile matchy ctrl  -- We need to strip all CatchAllK and
@@ -1061,8 +1111,8 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     -- Some helper functions to build foci and closures.
     evalClosure t env stack = Eval (Closure Unevaled t env stack)
     evalValue b t env stack = Eval (Closure (Value b) t env stack)
-    evalValueNoBlk          = evalValue $ notBlocked ()
-    valueNoBlk t env stack  = Closure (Value $ notBlocked ()) t env stack
+    evalTrueValue           = evalValue $ notBlocked ()
+    trueValue t env stack   = Closure (Value $ notBlocked ()) t env stack
     mkValue b               = setIsValue (Value b)
 
     -- Building lambdas
