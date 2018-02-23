@@ -926,11 +926,10 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
         FDone xs body -> {-# SCC "runAM.FDone" #-} do
             -- Don't ask me why, but not being strict in the stack causes a memory leak.
             let (zs, env, !stack') = buildEnv xs stack
-                ctrl'              = dropWhile matchy ctrl
-            case body of
-              Var x [] | null zs -> do -- shortcut for returning a single variable
-                cl <- derefPointer_ (lookupEnv_ x env)
-                runAM (Eval (clApply cl stack'), ctrl')
+                ctrl'              = dropWhile matchy ctrl  -- We need to strip all CatchAllK and
+                                                            -- NoMatchK frames from the control stack.
+            case body of  -- Shortcut for when the right-hand side is a naked variable.
+              Var x [] | null zs -> evalPointerAM (lookupEnv_ x env) stack' ctrl'
               _ -> runAM (Eval (Closure Unevaled (lams zs body) env stack'), ctrl')
           where
             matchy CatchAllK{}   = True
