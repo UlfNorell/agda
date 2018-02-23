@@ -405,7 +405,7 @@ memoQName f = unsafePerformIO $ do
           writeIORef tbl (Map.insert i y m)
           return y
 
--- Fast reduction ---------------------------------------------------------
+-- * Fast reduction
 
 -- | First argument: allow non-terminating reductions.
 fastReduce :: Bool -> Term -> ReduceM (Blocked Term)
@@ -483,7 +483,7 @@ createThunk cl = Pointer <$> newSTRef (Thunk cl)
 pureThunk :: Closure s -> Pointer s
 pureThunk = Pure
 
--- "Abstract" interface to environments
+-- * Environments
 
 emptyEnv :: Env s
 emptyEnv = []
@@ -555,6 +555,20 @@ clApply :: Closure s -> Stack s -> Closure s
 clApply c es' | isEmptyStack es' = c
 clApply (Closure _ t env es) es' = Closure Unevaled t env (es >< es')
 
+-- * The Agda Abstract Machine
+
+-- | The abstract machine state consists of a 'Focus' and a 'ControlStack'. The focus is what the
+--   machine is currently working on and the control stack contains the continuations for what to do
+--   next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter.
+type AM s = (Focus s, ControlStack s)
+
+-- | The current focus of the abstract machine.
+data Focus s = Eval (Closure s)
+               -- ^ Evaluate the given closure to weak-head normal form. If the 'IsValue' field of
+               -- the closure is 'Value' we look at the control stack for what to do.
+             | Match QName FastCompiledClauses (Stack s)
+               -- ^ @Match f cc stack@ Match the arguments @stack@ against the case tree @cc@.
+
 -- | The control stack contains a list of continuations, i.e. what to do with
 --   the result of the current focus.
 type ControlStack s = [ControlFrame s]
@@ -603,11 +617,6 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Stack 
                         -- ^ @ApplyK stack@. Apply the current focus to the eliminations in @stack@.
                         --   This is used when a thunk needs to be updated with a partial
                         --   application of a function.
-
-data Focus s = Eval (Closure s)
-             | Match QName FastCompiledClauses (Stack s)
-
-type AM s = (Focus s, ControlStack s)
 
 instance Pretty a => Pretty (Thunk a) where
   prettyPrec _ BlackHole  = text "<BLACKHOLE>"
