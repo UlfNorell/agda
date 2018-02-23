@@ -479,29 +479,29 @@ pureThunk = Pure
 -- * Environments
 
 -- | The environment of a closure binds pointers to deBruijn indicies.
-type Env s = [Pointer s]
+newtype Env s = Env [Pointer s]
 
 emptyEnv :: Env s
-emptyEnv = []
+emptyEnv = Env []
 
 isEmptyEnv :: Env s -> Bool
-isEmptyEnv = null
+isEmptyEnv (Env xs) = null xs
 
 envSize :: Env s -> Int
-envSize = length
+envSize (Env xs) = length xs
 
-envToList :: Env s -> ST s [Closure s]
-envToList = mapM derefPointer_
+envToList :: Env s -> [Pointer s]
+envToList (Env xs) = xs
 
 extendEnv :: Pointer s -> Env s -> Env s
-extendEnv = (:)
+extendEnv p (Env xs) = Env (p : xs)
 
 -- | Unsafe.
 lookupEnv_ :: Int -> Env s -> Pointer s
-lookupEnv_ i e = e !! i
+lookupEnv_ i (Env e) = e !! i
 
 lookupEnv :: Int -> Env s -> Maybe (Pointer s)
-lookupEnv i e | i < n     = Just (e !! i)
+lookupEnv i e | i < n     = Just (lookupEnv_ i e)
               | otherwise = Nothing
   where n = envSize e
 
@@ -601,7 +601,7 @@ decodeClosure :: Closure s -> ST s (Blocked Term)
 decodeClosure (Closure isV t env stack) = do
     -- Note: it's important to be lazy in the stack and environment here. Hence the
     -- unsafeInterleaveST's and special version of parallelS.
-    vs <- unsafeInterleaveST $ traverse decodePointer env
+    vs <- unsafeInterleaveST $ traverse decodePointer (envToList env)
     es <- unsafeInterleaveST $ decodeStack stack
     return $ topMetaIsNotBlocked (applyE (applySubst (parS vs) t) es <$ b)
   where
@@ -1082,7 +1082,7 @@ instance Pretty (Closure s) where
   prettyPrec p (Closure isV t env stack) =
     mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
-                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
+                           , nest 2 $ prettyList $ zipWith envEntry [0..] (envToList env)
                            , nest 2 $ prettyList stack ]
       where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
             tag = case isV of Value{} -> "V"; Unevaled -> "E"
