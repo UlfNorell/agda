@@ -356,32 +356,6 @@ fastCase env (Branches proj con _ lit wild _) =
     stripSuc | Just c <- bSuc env = Map.delete (conName c)
              | otherwise          = id
 
-instance Pretty a => Pretty (FastCase a) where
-  prettyPrec p (FBranches _cop cs suc ls m) =
-    mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prSuc suc ++ prC m)
-    where
-      prC Nothing = []
-      prC (Just x) = [text "_ ->" <?> pretty x]
-
-      prSuc Nothing  = []
-      prSuc (Just x) = [text "suc ->" <?> pretty x]
-
-instance Pretty NameId where
-  pretty = text . show
-
-instance Pretty FastCompiledClauses where
-  pretty (FDone xs t) = (text "done" <+> prettyList xs) <?> prettyPrec 10 t
-  pretty FFail        = text "fail"
-  pretty (FEta n _ cc ca) =
-    text ("eta " ++ show n ++ " of") <?>
-      vcat ([ text "{} ->" <?> pretty cc ] ++
-            [ text "_ ->" <?> pretty cc | Just cc <- [ca] ])
-  pretty (FCase n bs) | fprojPatterns bs =
-    sep [ text $ "project " ++ show n
-        , nest 2 $ pretty bs
-        ]
-  pretty (FCase n bs) =
-    text ("case " ++ show n ++ " of") <?> pretty bs
 
 {-# INLINE lookupCon #-}
 lookupCon :: QName -> FastCase c -> Maybe c
@@ -617,40 +591,6 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Stack 
                         -- ^ @ApplyK stack@. Apply the current focus to the eliminations in @stack@.
                         --   This is used when a thunk needs to be updated with a partial
                         --   application of a function.
-
-instance Pretty a => Pretty (Thunk a) where
-  prettyPrec _ BlackHole  = text "<BLACKHOLE>"
-  prettyPrec p (Thunk cl) = prettyPrec p cl
-
-instance Pretty (Pointer s) where
-  prettyPrec p = prettyPrec p . unsafeDerefPointer
-
-instance Pretty (Closure s) where
-  prettyPrec p (Closure isV t env stack) =
-    mparens (p > 9) $ fsep [ text tag
-                           , nest 2 $ prettyPrec 10 t
-                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
-                           , nest 2 $ prettyList (toList stack) ]
-      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
-            tag = case isV of Value{} -> "V"; Unevaled -> "E"
-
-instance Pretty (Focus s) where
-  prettyPrec p (Eval cl)          = prettyPrec p cl
-  prettyPrec p (Match f cc st) = mparens (p > 9) $ sep [ text "M" <+> pretty f
-                                                       , nest 2 $ prettyList st
-                                                       , nest 2 $ prettyPrec 10 cc ]
-
-instance Pretty (ControlFrame s) where
-  prettyPrec p (CaseK f _ _ _ _)        = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
-  prettyPrec p (NoMatchK f _)           = mparens (p > 9) $ text "NoMatchK" <+> pretty (qnameName f)
-  prettyPrec p (ForceK _ stack0 stack1) = mparens (p > 9) $ text "ForceK" <?> prettyList (stackToList $ stack0 >< stack1)
-  prettyPrec _ (NatSucK n)              = text ("+" ++ show n)
-  prettyPrec p CatchAllK{}              = text "CatchAllK"
-  prettyPrec p (PrimOpK f _ vs cls _)   = mparens (p > 9) $ sep [ text "PrimOpK" <+> pretty f
-                                                                , nest 2 $ prettyList vs
-                                                                , nest 2 $ prettyList cls ]
-  prettyPrec p (UpdateThunk ps)         = mparens (p > 9) $ text "UpdateThunk" <+> text (show (length ps))
-  prettyPrec p (ApplyK stack)           = mparens (p > 9) $ text "ApplyK" <?> prettyList (toList stack)
 
 compile :: Term -> AM s
 compile t = (Eval (Closure Unevaled t emptyEnv emptyStack), [])
@@ -1105,4 +1045,68 @@ reduceTm env !constInfo allowNonTerminating hasRewriting bEnv = compileAndRun . 
             []           -> (xs0, env, st)
             Apply c : st -> go xs st (unArg c `extendEnv` env)
             _            -> __IMPOSSIBLE__
+
+
+-- Pretty printing --------------------------------------------------------
+
+instance Pretty a => Pretty (FastCase a) where
+  prettyPrec p (FBranches _cop cs suc ls m) =
+    mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prSuc suc ++ prC m)
+    where
+      prC Nothing = []
+      prC (Just x) = [text "_ ->" <?> pretty x]
+
+      prSuc Nothing  = []
+      prSuc (Just x) = [text "suc ->" <?> pretty x]
+
+instance Pretty NameId where
+  pretty = text . show
+
+instance Pretty FastCompiledClauses where
+  pretty (FDone xs t) = (text "done" <+> prettyList xs) <?> prettyPrec 10 t
+  pretty FFail        = text "fail"
+  pretty (FEta n _ cc ca) =
+    text ("eta " ++ show n ++ " of") <?>
+      vcat ([ text "{} ->" <?> pretty cc ] ++
+            [ text "_ ->" <?> pretty cc | Just cc <- [ca] ])
+  pretty (FCase n bs) | fprojPatterns bs =
+    sep [ text $ "project " ++ show n
+        , nest 2 $ pretty bs
+        ]
+  pretty (FCase n bs) =
+    text ("case " ++ show n ++ " of") <?> pretty bs
+
+instance Pretty a => Pretty (Thunk a) where
+  prettyPrec _ BlackHole  = text "<BLACKHOLE>"
+  prettyPrec p (Thunk cl) = prettyPrec p cl
+
+instance Pretty (Pointer s) where
+  prettyPrec p = prettyPrec p . unsafeDerefPointer
+
+instance Pretty (Closure s) where
+  prettyPrec p (Closure isV t env stack) =
+    mparens (p > 9) $ fsep [ text tag
+                           , nest 2 $ prettyPrec 10 t
+                           , nest 2 $ prettyList $ zipWith envEntry [0..] env
+                           , nest 2 $ prettyList (toList stack) ]
+      where envEntry i c = text ("@" ++ show i ++ " =") <+> pretty c
+            tag = case isV of Value{} -> "V"; Unevaled -> "E"
+
+instance Pretty (Focus s) where
+  prettyPrec p (Eval cl)          = prettyPrec p cl
+  prettyPrec p (Match f cc st) = mparens (p > 9) $ sep [ text "M" <+> pretty f
+                                                       , nest 2 $ prettyList st
+                                                       , nest 2 $ prettyPrec 10 cc ]
+
+instance Pretty (ControlFrame s) where
+  prettyPrec p (CaseK f _ _ _ _)        = mparens (p > 9) $ text "CaseK" <+> pretty (qnameName f)
+  prettyPrec p (NoMatchK f _)           = mparens (p > 9) $ text "NoMatchK" <+> pretty (qnameName f)
+  prettyPrec p (ForceK _ stack0 stack1) = mparens (p > 9) $ text "ForceK" <?> prettyList (stackToList $ stack0 >< stack1)
+  prettyPrec _ (NatSucK n)              = text ("+" ++ show n)
+  prettyPrec p CatchAllK{}              = text "CatchAllK"
+  prettyPrec p (PrimOpK f _ vs cls _)   = mparens (p > 9) $ sep [ text "PrimOpK" <+> pretty f
+                                                                , nest 2 $ prettyList vs
+                                                                , nest 2 $ prettyList cls ]
+  prettyPrec p (UpdateThunk ps)         = mparens (p > 9) $ text "UpdateThunk" <+> text (show (length ps))
+  prettyPrec p (ApplyK stack)           = mparens (p > 9) $ text "ApplyK" <?> prettyList (toList stack)
 
