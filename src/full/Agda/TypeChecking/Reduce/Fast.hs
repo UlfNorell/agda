@@ -6,7 +6,8 @@
 {-|
 
 This module implements the Agda Abstract Machine used for compile-time reduction. It's a
-call-by-need environment machine with an implicit heap maintained using 'STRef's.
+call-by-need environment machine with an implicit heap maintained using 'STRef's. See the 'AM' type
+below for a description of the machine.
 
 Some other tricks that improves performance:
 
@@ -40,7 +41,7 @@ module Agda.TypeChecking.Reduce.Fast
 import Control.Arrow (first, second)
 import Control.Monad.Reader
 import Control.Monad.ST
-import Control.Monad.ST.Unsafe
+import Control.Monad.ST.Unsafe (unsafeSTToIO, unsafeInterleaveST)
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -490,8 +491,8 @@ lookupEnv i e | i < n     = Just (lookupEnv_ i e)
 
 -- * The Agda Abstract Machine
 
--- | The abstract machine state has two states 'Eval' and 'Match' that determines what the machine
---   is currently working on: evaluating a closure in the Eval state and matching a spine against a
+-- | The abstract machine state has two states 'Eval' and 'Match' that determine what the machine is
+--   currently working on: evaluating a closure in the Eval state and matching a spine against a
 --   case tree in the Match state. Both states contain a 'ControlStack' of continuations for what to
 --   do next. The heap is maintained implicitly using 'STRef's, hence the @s@ parameter.
 data AM s = Eval (Closure s) !(ControlStack s)
@@ -540,8 +541,8 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Spine 
                         --   eliminations.
                     | NatSucK Integer
                         -- ^ @NatSucK n@. Add @n@ to the focus. If the focus computes to a natural
-                        --   number literal this returns a new literal, otherwise it builds a spine
-                        --   of @n@ calls to @suc@.
+                        --   number literal this returns a new literal, otherwise it constructs @n@
+                        --   calls to @suc@.
                     | PrimOpK QName ([Literal] -> Term) [Literal] [Pointer s] (Maybe FastCompiledClauses)
                         -- ^ @PrimOpK f op lits es cc@. Evaluate the primitive function @f@ using
                         --   the Haskell function @op@. @op@ gets a list of literal values in
@@ -640,12 +641,11 @@ buildEnv xs spine = go xs spine emptyEnv
 
 -- * Running the abstract machine
 
--- | Evaluating a term in the abstract machine.
---   state and environment in the 'ReduceEnv' argument, some precomputed
---   built-in mappings in 'BuiltinEnv', the memoised 'getConstInfo' function, a
---   couple of flags (allow non-terminating function unfolding, and whether
---   rewriting is enabled), and a term to reduce. The result is the weak-head
---   normal form of the term with an attached blocking tag.
+-- | Evaluating a term in the abstract machine. It gets the type checking state and environment in
+--   the 'ReduceEnv' argument, some precomputed built-in mappings in 'BuiltinEnv', the memoised
+--   'getConstInfo' function, a couple of flags (allow non-terminating function unfolding, and
+--   whether rewriting is enabled), and a term to reduce. The result is the weak-head normal form of
+--   the term with an attached blocking tag.
 reduceTm :: ReduceEnv -> BuiltinEnv -> (QName -> CompactDef) -> Bool -> Bool -> Term -> Blocked Term
 reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun . traceDoc (text "-- fast reduce --")
   where
@@ -689,7 +689,7 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     runAM' (Eval cl@(Closure Value{} _ _ _) []) = decodeClosure cl
 
     -- Unevaluated closure: inspect the term and take the appropriate action. For instance,
-    --  - Change to a 'Match' focus if a definition
+    --  - Change to the 'Match' state if a definition
     --  - Look up in the environment if variable
     --  - Perform a beta step if lambda and application elimination in the spine
     --  - Perform a record beta step if record constructor and projection elimination in the spine
@@ -805,7 +805,7 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
       where
         plus 0 cl = cl
         plus n cl =
-          trueValue (Con (fromJust suc) ConOSystem []) emptyEnv $
+          trueValue (Con (fromMaybe __IMPOSSIBLE__ suc) ConOSystem []) emptyEnv $
                      Apply (defaultArg arg) : []
           where arg = pureThunk (plus (n - 1) cl)
 
@@ -875,82 +875,38 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
       runAM (Eval (clApply cl spine) ctrl)
 
     -- Case: CaseK. Pattern matching against a value. If it's a stuck value the pattern match is
-    -- stuck and we find the NoMatchK frame and return (see stuckMatch). Otherwise we need to find
-    -- a matching branch switch to the Match state. If there is no matching branch we look for a
-    -- CatchAll on the control stack, or fail if there isn't one (see failedMatch).
-    -- If the current branches contain a catch-all case we need to push a CatchAll on the control
-    -- stack when picking one of the other branches.
+    -- stuck and we return the closure from the match stack (see stuckMatch). Otherwise we need to
+    -- find a matching branch switch to the Match state. If there is no matching branch we look for
+    -- a CatchAll in the match stack, or fail if there isn't one (see failedMatch). If the current
+    -- branches contain a catch-all case we need to push a CatchAll on the match stack if picking
+    -- one of the other branches.
     runAM' (Eval cl@(Closure (Value blk) t env spine) ctrl0@(CaseK f i bs spine0 spine1 stack : ctrl)) =
       {-# SCC "runAM.CaseK" #-}
       case blk of
         Blocked{}    -> stuck -- we might as well check the blocking tag first
-        NotBlocked{} ->
-          let p      = pureThunk cl -- cl is already a value so no need to thunk it.
-              spine' = spine0 <> [Apply $ Arg i p] <> spine1
-              -- Push catch-all frame on the match stack if there is a catch-all.
-              caStack = case fcatchAllBranch bs of
-                Nothing -> stack
-                Just cc -> CatchAll cc spine' >: stack
+        NotBlocked{} -> case t of
+          -- Case: suc constructor
+          Con c ci [] | isSuc c -> matchSuc $ matchCatchall $ failedMatch f stack ctrl
 
-              -- The matchX functions below all take an extra argument which is what to do if there
-              -- is no appropriate branch in the case tree. ifJust is maybe with a different
-              -- argument order letting you leave out the Nothing case.
-              (m `ifJust` f) z = maybe z f m
+          -- Case: constructor
+          Con c ci [] -> matchCon c ci (length spine) $ matchCatchall $ failedMatch f stack ctrl
 
-              -- Matching constructor: Switch to the Match state, inserting the constructor argument
-              -- in the spine between spine0 and spine1.
-              matchCon c ci ar = lookupCon (conName c) bs `ifJust` \ cc ->
-                runAM (Match f cc (spine0 <> spine <> spine1) caStack ctrl)
+          -- Case: non-empty elims. We can get here from a fallback (which builds a value without
+          -- shifting arguments onto spine)
+          Con c ci es -> do
+            spine' <- elimsToSpine env es
+            runAM (evalValue blk (Con c ci []) emptyEnv (spine' <> spine) ctrl0)
 
-              -- Catch-all: Don't add a CatchAll to the match stack since this _is_ the catch-all.
-              matchCatchall = fcatchAllBranch bs `ifJust` \ cc ->
-                runAM (Match f cc spine' stack ctrl)
+          -- Case: natural number literals. Literal natural number patterns are translated to
+          -- suc-matches, so there is no need to try matchLit.
+          Lit (LitNat _ 0) -> matchLitZero  $ matchCatchall $ failedMatch f stack ctrl
+          Lit (LitNat _ n) -> matchLitSuc n $ matchCatchall $ failedMatch f stack ctrl
 
-              -- Matching literal: Switch to the Match state. There are no arguments to add to the
-              -- spine.
-              matchLit l = Map.lookup l (flitBranches bs) `ifJust` \ cc ->
-                runAM (Match f cc (spine0 <> spine1) caStack ctrl)
+          -- Case: literal
+          Lit l -> matchLit l $ matchCatchall $ failedMatch f stack ctrl
 
-              -- Matching a constructor against 'suc': Insert the argument in the spine.
-              matchSuc c ci | isSuc c =
-                fsucBranch bs `ifJust` \ cc ->
-                  runAM (Match f cc (spine0 <> spine <> spine1) caStack ctrl)
-              matchSuc _ _ = id
-
-              -- Matching a non-zero natural number literal: Subtract one from the literal and
-              -- insert it in the spine for the Match state.
-              matchLitSuc n = fsucBranch bs `ifJust` \ cc ->
-                  runAM (Match f cc (spine0 <> [Apply $ defaultArg arg] <> spine1) caStack ctrl)
-                where n'  = n - 1
-                      arg = pureThunk $ trueValue (Lit $ LitNat noRange n') emptyEnv []
-
-              -- Matching a literal 0. Simple calls matchCon with the zero constructor.
-              matchLitZero | Just z <- zero = matchCon z ConOSystem 0
-                           | otherwise      = id
-
-          in case t of
-            -- Case: suc constructor
-            Con c ci [] | isSuc c -> matchSuc c ci $ matchCatchall $ failedMatch f stack ctrl
-
-            -- Case: constructor
-            Con c ci [] -> matchCon c ci (length spine) $ matchCatchall $ failedMatch f stack ctrl
-
-            -- Case: non-empty elims. We can get here from a fallback (which builds a value without
-            -- shifting arguments onto spine)
-            Con c ci es -> do
-              spine' <- elimsToSpine env es
-              runAM (evalValue blk (Con c ci []) emptyEnv (spine' <> spine) ctrl0)
-
-            -- Case: natural number literals. Literal natural number patterns are translated to
-            -- suc-matches, so there is no need to try matchLit.
-            Lit (LitNat _ 0) -> matchLitZero  $ matchCatchall $ failedMatch f stack ctrl
-            Lit (LitNat _ n) -> matchLitSuc n $ matchCatchall $ failedMatch f stack ctrl
-
-            -- Case: literal
-            Lit l -> matchLit l $ matchCatchall $ failedMatch f stack ctrl
-
-            -- Case: not constructor or literal. In this case we are stuck.
-            _ -> stuck
+          -- Case: not constructor or literal. In this case we are stuck.
+          _ -> stuck
       where
         stuck = do
             -- Compute new reason for being stuck. See Agda.Syntax.Internal.stuckOn for the logic.
@@ -959,7 +915,50 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
                       NotBlocked r _ -> decodeClosure_ cl <&> \ v -> NotBlocked (stuckOn (Apply $ Arg i v) r) ()
             stuckMatch blk' stack ctrl
 
-    -- Case: Match focus. Here we look at the case tree and take the appropriate action:
+        -- This the spine at this point in the matching. A catch-all match doesn't change the spine.
+        catchallSpine = spine0 <> [Apply $ Arg i p] <> spine1
+          where p = pureThunk cl -- cl is already a value so no need to thunk it.
+
+        -- Push catch-all frame on the match stack if there is a catch-all (and we're not taking it
+        -- right now).
+        catchallStack = case fcatchAllBranch bs of
+          Nothing -> stack
+          Just cc -> CatchAll cc catchallSpine >: stack
+
+        -- The matchX functions below all take an extra argument which is what to do if there is no
+        -- appropriate branch in the case tree. ifJust is maybe with a different argument order
+        -- letting you chain a bunch if maybe matches in if-then-elseif fashion.
+        (m `ifJust` f) z = maybe z f m
+
+        -- Matching constructor: Switch to the Match state, inserting the constructor arguments in
+        -- the spine between spine0 and spine1.
+        matchCon c ci ar = lookupCon (conName c) bs `ifJust` \ cc ->
+          runAM (Match f cc (spine0 <> spine <> spine1) catchallStack ctrl)
+
+        -- Catch-all: Don't add a CatchAll to the match stack since this _is_ the catch-all.
+        matchCatchall = fcatchAllBranch bs `ifJust` \ cc ->
+          runAM (Match f cc catchallSpine stack ctrl)
+
+        -- Matching literal: Switch to the Match state. There are no arguments to add to the spine.
+        matchLit l = Map.lookup l (flitBranches bs) `ifJust` \ cc ->
+          runAM (Match f cc (spine0 <> spine1) catchallStack ctrl)
+
+        -- Matching a 'suc' constructor: Insert the argument in the spine.
+        matchSuc = fsucBranch bs `ifJust` \ cc ->
+            runAM (Match f cc (spine0 <> spine <> spine1) catchallStack ctrl)
+
+        -- Matching a non-zero natural number literal: Subtract one from the literal and
+        -- insert it in the spine for the Match state.
+        matchLitSuc n = fsucBranch bs `ifJust` \ cc ->
+            runAM (Match f cc (spine0 <> [Apply $ defaultArg arg] <> spine1) catchallStack ctrl)
+          where n'  = n - 1
+                arg = pureThunk $ trueValue (Lit $ LitNat noRange n') emptyEnv []
+
+        -- Matching a literal 0. Simply calls matchCon with the zero constructor.
+        matchLitZero = matchCon (fromMaybe __IMPOSSIBLE__ zero) ConOSystem 0
+                            -- If we have a nat literal we have builtin zero.
+
+    -- Case: Match state. Here we look at the case tree and take the appropriate action:
     --   - FFail: stuck
     --   - FDone: evaluate body
     --   - FEta: eta expand argument
@@ -968,21 +967,23 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     runAM' (Match f cc spine stack ctrl) = {-# SCC "runAM.Match" #-}
       case cc of
         -- Absurd match. You can get here for open terms.
-        FFail         -> stuckMatch (NotBlocked AbsurdMatch ()) stack ctrl
+        FFail -> stuckMatch (NotBlocked AbsurdMatch ()) stack ctrl
 
         -- Matching complete. Compute the environment for the body and switch to the Eval state.
         FDone xs body -> do
             -- Don't ask me why, but not being strict in the spine causes a memory leak.
             let (zs, env, !spine') = buildEnv xs spine
-            case body of  -- Shortcut for when the right-hand side is a naked variable.
-              Var x [] | null zs -> evalPointerAM (lookupEnv_ x env) spine' ctrl
-              _ -> runAM (Eval (Closure Unevaled (lams zs body) env spine') ctrl)
+            -- case body of  -- Shortcut for when the right-hand side is a naked variable.
+            --   Var x [] | null zs -> evalPointerAM (lookupEnv_ x env) spine' ctrl
+            runAM (Eval (Closure Unevaled (lams zs body) env spine') ctrl)
 
+        -- A record pattern match. This does not block evaluation (since that would violate eta
+        -- equality), so in this case we replace the argument with its projections in the spine and
+        -- keep matching.
         FEta n fs cc ca ->
-          let (spine0, sp) = splitAt n spine in
-          case sp of
-            []               -> done Underapplied
-            Apply e : spine1 -> do
+          case splitAt n spine of                           -- Question: add lambda here? doesn't
+            (_, [])                    -> done Underapplied -- matter for equality, but might for
+            (spine0, Apply e : spine1) -> do                -- rewriting or 'with'.
               -- Replace e by its projections in the spine. And don't forget a
               -- CatchAll frame if there's a catch-all.
               let projClosure f = Closure Unevaled (Var 0 []) (extendEnv (unArg e) emptyEnv) [Proj ProjSystem f]
@@ -992,20 +993,21 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
               runAM (Match f cc spine' stack' ctrl)
             _ -> __IMPOSSIBLE__
 
-        -- Split on nth elimination in the spine
-        FCase n bs -> {-# SCC "runAM.FDone" #-}
+        -- Split on nth elimination in the spine. Can be either a regular split or a copattern
+        -- split.
+        FCase n bs ->
           case splitAt n spine of
-            (spine0, sp) -> case sp of
-              -- If the nth elimination is not given, we're done
-              [] -> done Underapplied
-              -- apply elim: push the current match on the control stack and
-              -- evaluate the argument
-              Apply e : spine1 -> evalPointerAM (unArg e) [] $
-                                    CaseK f (argInfo e) bs spine0 spine1 stack : ctrl
-              -- projection elim
-              e@(Proj o p) : spine1 ->
+            -- If the nth elimination is not given, we're stuck.
+            (_, []) -> done Underapplied
+            -- Apply elim: push the current match on the control stack and evaluate the argument
+            (spine0, Apply e : spine1) -> evalPointerAM (unArg e) [] $
+                                            CaseK f (argInfo e) bs spine0 spine1 stack : ctrl
+            -- Projection elim: in this case we must be in a copattern split and find the projection
+            -- in the case tree and keep going. If it's not there... actually it really should be
+            -- there. Copattern splits cannot be partial.
+            (spine0, Proj o p : spine1) ->
                 case lookupCon p bs of
-                  Nothing -> done $ StuckOn (Proj o p) -- No case for the projection: stop
+                  Nothing -> __IMPOSSIBLE__
                   Just cc -> runAM (Match f cc (spine0 <> spine1) stack ctrl)
       where done why = stuckMatch (NotBlocked why ()) stack ctrl
 
@@ -1024,8 +1026,8 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
 
     -- Fall back to slow reduction. This happens if we encounter a definition that's not supported
     -- by the machine (like a primitive function that does not work on literals), or a term that is
-    -- not supported (Level, Sort, Shared, and DontCare) at the moment). In this case we decode the
-    -- current focus to a 'Term', call 'slowReduceTerm' and pack up the result in a 'Value' closure.
+    -- not supported (Level, Sort, Shared, and DontCare at the moment). In this case we decode the
+    -- current focus to a 'Term', call 'slowReduceTerm' and pack up the result in a value closure.
     fallbackAM :: AM s -> ST s (Blocked Term)
     fallbackAM (Eval c ctrl) = do
         v <- decodeClosure_ c
@@ -1034,8 +1036,8 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     fallbackAM _ = __IMPOSSIBLE__
 
     -- If rewriting is enabled, try to apply rewrite rules to the current focus before considering
-    -- it a value. The current focus must be 'Eval' of a value closure. Take care to only test the
-    -- 'hasRewriting' flag once.
+    -- it a value. The current state must be 'Eval' and the focus a value closure. Take care to only
+    -- test the 'hasRewriting' flag once.
     rewriteAM :: AM s -> ST s (Blocked Term)
     rewriteAM = if hasRewriting then rewriteAM' else runAM
 
@@ -1094,7 +1096,7 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
           traceSLn "impossible" 10 ("Incomplete pattern matching when applying " ++ show f)
                    __IMPOSSIBLE__
 
-    -- Some helper functions to build foci and closures.
+    -- Some helper functions to build machine states and closures.
     evalClosure t env spine = Eval (Closure Unevaled t env spine)
     evalValue b t env spine = Eval (Closure (Value b) t env spine)
     evalTrueValue           = evalValue $ notBlocked ()
