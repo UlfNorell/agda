@@ -438,19 +438,21 @@ unsafeDerefPointer :: Pointer s -> Thunk (Closure s)
 unsafeDerefPointer (Pure x)    = Thunk x
 unsafeDerefPointer (Pointer p) = unsafePerformIO (unsafeSTToIO (readSTRef p))
 
+readPointer :: STPointer s -> ST s (Thunk (Closure s))
+readPointer = readSTRef
+
 storePointer :: STPointer s -> Closure s -> ST s ()
 storePointer ptr !cl = writeSTRef ptr (Thunk cl)
     -- Note the strict match. To prevent leaking memory in case of unnecessary updates.
 
-blackHole :: Pointer s -> ST s ()
-blackHole Pure{}        = return ()
-blackHole (Pointer ptr) = writeSTRef ptr BlackHole
+blackHole :: STPointer s -> ST s ()
+blackHole ptr = writeSTRef ptr BlackHole
 
 -- | Create a thunk. If the closure is a naked variable we can reuse the pointer from the
 --   environment to avoid creating long pointer chains.
 createThunk :: Closure s -> ST s (Pointer s)
-createThunk (Closure _ (Var x []) env' spine)
-  | null spine, Just p <- lookupEnv x env' = return p
+createThunk (Closure _ (Var x []) env spine)
+  | null spine, Just p <- lookupEnv x env = return p
 createThunk cl = Pointer <$> newSTRef (Thunk cl)
 
 -- | Create a thunk that is not shared or updated.
@@ -1012,14 +1014,13 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     -- the pointer and an 'UpdateThunk' frame is pushed to the control stack. In this case the
     -- application to the spine has to be deferred until after the update through an 'ApplyK' frame.
     evalPointerAM :: Pointer s -> Spine s -> ControlStack s -> ST s (Blocked Term)
-    evalPointerAM p spine ctrl = do
-      thunk <- derefPointer p
-      case thunk of
-        BlackHole -> __IMPOSSIBLE__
-        Thunk cl@(Closure Unevaled _ _ _) -> do
-          blackHole p
-          runAM (Eval cl $ updateThunkCtrl p $ [ApplyK spine | not (null spine)] ++ ctrl)
-        Thunk cl -> runAM (Eval (clApply cl spine) ctrl)
+    evalPointerAM (Pure cl)   spine ctrl = runAM (Eval (clApply cl spine) ctrl)
+    evalPointerAM (Pointer p) spine ctrl = readPointer p >>= \ case
+      BlackHole -> __IMPOSSIBLE__
+      Thunk cl@(Closure Unevaled _ _ _) -> do
+        blackHole p
+        runAM (Eval cl $ updateThunkCtrl p $ [ApplyK spine | not (null spine)] ++ ctrl)
+      Thunk cl -> runAM (Eval (clApply cl spine) ctrl)
 
     -- Fall back to slow reduction. This happens if we encounter a definition that's not supported
     -- by the machine (like a primitive function that does not work on literals), or a term that is
@@ -1063,10 +1064,9 @@ reduceTm redEnv bEnv !constInfo allowNonTerminating hasRewriting = compileAndRun
     sucCtrl               ctrl  = NatSucK 1 : ctrl
 
     -- Add a UpdateThunk frame to the control stack. Pack consecutive updates into a single frame.
-    updateThunkCtrl :: Pointer s -> ControlStack s -> ControlStack s
-    updateThunkCtrl Pure{}                        ctrl  = ctrl
-    updateThunkCtrl (Pointer p) (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
-    updateThunkCtrl (Pointer p)                   ctrl  = UpdateThunk [p] : ctrl
+    updateThunkCtrl :: STPointer s -> ControlStack s -> ControlStack s
+    updateThunkCtrl p (UpdateThunk ps : ctrl) = UpdateThunk (p : ps) : ctrl
+    updateThunkCtrl p                   ctrl  = UpdateThunk [p] : ctrl
 
     -- Only unfold delayed (corecursive) definitions if the result is being cased on.
     unfoldDelayed :: ControlStack s -> Bool
