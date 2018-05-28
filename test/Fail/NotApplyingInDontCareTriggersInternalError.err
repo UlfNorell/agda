@@ -1,3 +1,8 @@
-NotApplyingInDontCareTriggersInternalError.agda:49,60-73
-Variable leftRefl is declared irrelevant, so it cannot be used here
-when inferring the type of leftRefl a≼a'
+NotApplyingInDontCareTriggersInternalError.agda:47,71-79
+{t1 t2 t3 : Val} → _R_82 PA t1 t2 → _R_82 PA t2 t3 → _R_82 PA t1 t3
+!= AA .t1 .t2 → AA .t2 .t3 → AA .t1 .t3 because one is an implicit
+function type and the other is an explicit function type
+when checking that the inferred type of an application
+  Transitive (_R_82 PA)
+matches the expected type
+  AA .t1 .t2 → AA .t2 .t3 → AA .t1 .t3
