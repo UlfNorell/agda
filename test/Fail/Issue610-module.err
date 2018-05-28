@@ -1,4 +1,6 @@
-Issue610-module.agda:27,8-40
-.(M.out _) !=< ⊥ of type Set
-when checking that the expression subst (λ x → x) (cong ack hah) _
-has type ⊥
+Issue610-module.agda:27,25-37
+.(M.out _) != ⊥ of type Set
+when checking that the inferred type of an application
+  ack _x_17 ≡ ack (set _)
+matches the expected type
+  ack _x_17 ≡ ⊥
