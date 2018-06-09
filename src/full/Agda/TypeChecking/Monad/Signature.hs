@@ -981,7 +981,7 @@ makeAbstract d =
                }
   where
     makeAbs Axiom         = Just Axiom
-    makeAbs GeneralizableVar = Just GeneralizableVar
+    makeAbs d@GeneralizableVar{} = Just d
     makeAbs d@Datatype {} = Just $ AbstractDefn d
     makeAbs d@Function {} = Just $ AbstractDefn d
     makeAbs Constructor{} = Nothing

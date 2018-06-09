@@ -188,7 +188,7 @@ createMetaInfo' b = do
     { miClosRange       = cl
     , miMetaOccursCheck = b
     , miNameSuggestion  = ""
-    , miGeneralizable   = gen
+    , miGeneralizable   = hide $ defaultArg gen
     }
 
 setValueMetaName :: Term -> MetaNameSuggestion -> TCM ()
@@ -209,6 +209,11 @@ setMetaNameSuggestion mi s = unless (null s || isUnderscore s) $ do
     "setting name of meta " ++ prettyShow mi ++ " to " ++ s
   updateMetaVar mi $ \ mvar ->
     mvar { mvInfo = (mvInfo mvar) { miNameSuggestion = s }}
+
+setMetaArgInfo :: MetaId -> ArgInfo -> TCM ()
+setMetaArgInfo m i = updateMetaVar m $ \ mv ->
+  mv { mvInfo = (mvInfo mv)
+        { miGeneralizable = setArgInfo i (miGeneralizable (mvInfo mv)) } }
 
 updateMetaVarRange :: MetaId -> Range -> TCM ()
 updateMetaVarRange mi r = updateMetaVar mi (setRange r)
@@ -366,26 +371,28 @@ withMetaInfo :: Closure Range -> TCM a -> TCM a
 withMetaInfo mI cont = enterClosure mI $ \ r ->
   setCurrentRange r cont
 
+getMetaVariables :: (MetaVariable -> Bool) -> TCM [MetaId]
+getMetaVariables p = do
+  store <- getMetaStore
+  return [ i | (i, mv) <- Map.assocs store, p mv ]
+
 -- | Get all metas that correspond to generalizable variables.
-getGeneralizeMetas :: TCM [MetaId]
-getGeneralizeMetas =
-  concatMap (Map.keys . snd) . Map.elems <$> use stGeneralizableMetas
+getGeneralizableMetas :: TCM [MetaId]
+getGeneralizableMetas = getMetaVariables isGen
+  where isGen mv = YesGeneralize == unArg (miGeneralizable $ mvInfo mv) &&
+                   isOpenMeta (mvInstantiation mv)
 
 getInstantiatedMetas :: TCM [MetaId]
-getInstantiatedMetas = do
-    store <- getMetaStore
-    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isInst mi ]
-    where
-        isInst Open                           = False
-        isInst OpenIFS                        = False
-        isInst BlockedConst{}                 = False
-        isInst PostponedTypeCheckingProblem{} = False
-        isInst InstV{}                        = True
+getInstantiatedMetas = getMetaVariables (isInst . mvInstantiation)
+  where
+    isInst Open                           = False
+    isInst OpenIFS                        = False
+    isInst BlockedConst{}                 = False
+    isInst PostponedTypeCheckingProblem{} = False
+    isInst InstV{}                        = True
 
 getOpenMetas :: TCM [MetaId]
-getOpenMetas = do
-    store <- getMetaStore
-    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isOpenMeta mi ]
+getOpenMetas = getMetaVariables (isOpenMeta . mvInstantiation)
 
 isOpenMeta :: MetaInstantiation -> Bool
 isOpenMeta Open                           = True

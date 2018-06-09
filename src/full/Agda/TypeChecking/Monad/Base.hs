@@ -184,7 +184,6 @@ data PostScopeState = PostScopeState
     --   Initialized to the current mutual block before the check.
     --   During occurs check, we remove definitions from this set
     --   as soon we have checked them.
-  , stPostGeneralizables      :: !(Map QName ((Set QName, ArgInfo), MetaStore))
   , stPostSignature           :: !Signature
     -- ^ Declared identifiers of the current file.
     --   These will be serialized after successful type checking.
@@ -319,7 +318,6 @@ initPostScopeState = PostScopeState
   , stPostSleepingConstraints  = []
   , stPostDirty                = False
   , stPostOccursCheckDefs      = Set.empty
-  , stPostGeneralizables       = Map.empty
   , stPostSignature            = emptySignature
   , stPostModuleCheckpoints    = Map.empty
   , stPostImportsDisplayForms  = HMap.empty
@@ -467,11 +465,6 @@ stOccursCheckDefs :: Lens' (Set QName) TCState
 stOccursCheckDefs f s =
   f (stPostOccursCheckDefs (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostOccursCheckDefs = x}}
-
-stGeneralizableMetas :: Lens' (Map QName ((Set QName, ArgInfo), MetaStore)) TCState
-stGeneralizableMetas f s =
-  f (stPostGeneralizables (stPostScopeState s)) <&>
-  \x -> s {stPostScopeState = (stPostScopeState s) {stPostGeneralizables = x}}
 
 stSignature :: Lens' Signature TCState
 stSignature f s =
@@ -957,6 +950,21 @@ instance Show a => Show (Judgement a) where
     show (HasType a t) = show a ++ " : " ++ show t
     show (IsSort  a t) = show a ++ " :sort " ++ show t
 
+-----------------------------------------------------------------------------
+-- ** Generalizable variables
+-----------------------------------------------------------------------------
+
+data DoGeneralize = YesGeneralize | NoGeneralize
+  deriving (Eq, Ord, Show, Data)
+
+-- | The value of a generalizable variable. This is created to be a
+--   generalizable meta before checking the type to be generalized.
+data GeneralizedValue = GeneralizedValue
+  { genvalCheckpoint :: CheckpointId
+  , genvalTerm       :: Term
+  , genvalType       :: Type
+  } deriving (Show, Data)
+
 ---------------------------------------------------------------------------
 -- ** Meta variables
 ---------------------------------------------------------------------------
@@ -1042,9 +1050,6 @@ data RunMetaOccursCheck
   | DontRunMetaOccursCheck
   deriving (Eq , Ord , Show)
 
-data DoGeneralize = YesGeneralize | NoGeneralize
-  deriving (Eq, Ord, Show, Data)
-
 -- | @MetaInfo@ is cloned from one meta to the next during pruning.
 data MetaInfo = MetaInfo
   { miClosRange       :: Closure Range -- TODO: Not so nice. But we want both to have the environment of the meta (Closure) and its range.
@@ -1053,8 +1058,8 @@ data MetaInfo = MetaInfo
   , miNameSuggestion  :: MetaNameSuggestion
     -- ^ Used for printing.
     --   @Just x@ if meta-variable comes from omitted argument with name @x@.
-  , miGeneralizable   :: DoGeneralize
-    -- ^ Should this meta be generalized if unsolved?
+  , miGeneralizable   :: Arg DoGeneralize
+    -- ^ Should this meta be generalized if unsolved? If so, at what ArgInfo?
   }
 
 -- | Name suggestion for meta variable.  Empty string means no suggestion.
@@ -1524,7 +1529,7 @@ data FunctionFlag
   deriving (Data, Eq, Ord, Enum, Show)
 
 data Defn = Axiom -- ^ Postulate
-          | GeneralizableVar  -- ^ Generalizable variable (introduced in `generalize` block)
+          | GeneralizableVar -- ^ Generalizable variable (introduced in `generalize` block)
           | AbstractDefn Defn
             -- ^ Returned by 'getConstInfo' if definition is abstract.
           | Function
@@ -1651,7 +1656,7 @@ instance Pretty Definition where
 
 instance Pretty Defn where
   pretty Axiom = text "Axiom"
-  pretty GeneralizableVar = text "GeneralizableVar"
+  pretty GeneralizableVar{} = text "GeneralizableVar"
   pretty (AbstractDefn def) = text "AbstractDefn" <?> parens (pretty def)
   pretty Function{..} =
     text "Function {" <?> vcat
@@ -2259,6 +2264,8 @@ data TCEnv =
                 --   the current context.
           , envGeneralizeMetas :: DoGeneralize
                 -- ^ Should new metas generalized over.
+          , envGeneralizedVars :: Map QName GeneralizedValue
+                -- ^ Values for used generalizable variables.
           }
     deriving Data
 
@@ -2312,6 +2319,7 @@ initEnv = TCEnv { envContext             = []
                 , envCurrentCheckpoint      = 0
                 , envCheckpoints            = Map.singleton 0 IdS
                 , envGeneralizeMetas        = NoGeneralize
+                , envGeneralizedVars        = Map.empty
                 }
 
 disableDestructiveUpdate :: TCM a -> TCM a
@@ -2450,6 +2458,9 @@ eCheckpoints f e = f (envCheckpoints e) <&> \ x -> e { envCheckpoints = x }
 
 eGeneralizeMetas :: Lens' DoGeneralize TCEnv
 eGeneralizeMetas f e = f (envGeneralizeMetas e) <&> \ x -> e { envGeneralizeMetas = x }
+
+eGeneralizedVars :: Lens' (Map QName GeneralizedValue) TCEnv
+eGeneralizedVars f e = f (envGeneralizedVars e) <&> \ x -> e { envGeneralizedVars = x }
 
 ---------------------------------------------------------------------------
 -- ** Context
