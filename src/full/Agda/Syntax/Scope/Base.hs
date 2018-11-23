@@ -112,11 +112,36 @@ data ScopeInfo = ScopeInfo
       , scopeInScope       :: InScopeSet
       , scopeFixities      :: C.Fixities    -- ^ Maps concrete names to fixities
       , scopePolarities    :: C.Polarities  -- ^ Maps concrete names to polarities
+        -- Use LogAccess to enable warning if we never look at the value inside
+        -- the corresponding block.
+      , _scopePrivate       :: LogAccess Access
+      , _scopeAbstract      :: LogAccess IsAbstract
+      , _scopeInstance      :: LogAccess IsInstance
       }
   deriving (Data, Show)
 
+scopePrivate :: Lens' (LogAccess Access) ScopeInfo
+scopePrivate f s = f (_scopePrivate s) <&> \ a -> s { _scopePrivate = a }
+
+scopeAbstract :: Lens' (LogAccess IsAbstract) ScopeInfo
+scopeAbstract f s = f (_scopeAbstract s) <&> \ a -> s { _scopeAbstract = a }
+
+scopeInstance :: Lens' (LogAccess IsInstance) ScopeInfo
+scopeInstance f s = f (_scopeInstance s) <&> \ a -> s { _scopeInstance = a }
+
+data LogAccess a = LogAccess { wasAccessed :: Bool, accessedValue :: a }
+  deriving (Data, Show, Functor)
+
+instance Applicative LogAccess where
+  pure = LogAccess False
+  LogAccess a1 f <*> LogAccess a2 x = LogAccess (a1 || a2) (f x)
+
+access :: Lens' (LogAccess a) b -> b -> (a, b)
+access l b = (accessedValue a, set l a{ wasAccessed = True } b)
+  where a = b ^. l
+
 instance Eq ScopeInfo where
-  ScopeInfo c1 m1 v1 l1 p1 _ _ _ _ _ == ScopeInfo c2 m2 v2 l2 p2 _ _ _ _ _ =
+  ScopeInfo c1 m1 v1 l1 p1 _ _ _ _ _ _ _ _ == ScopeInfo c2 m2 v2 l2 p2 _ _ _ _ _ _ _ _ =
     c1 == c2 && m1 == m2 && v1 == v2 && l1 == l2 && p1 == p2
 
 -- | Local variables.
@@ -417,6 +442,9 @@ emptyScopeInfo = ScopeInfo
   , scopeInScope       = Set.empty
   , scopeFixities      = Map.empty
   , scopePolarities    = Map.empty
+  , _scopePrivate      = pure PublicAccess
+  , _scopeAbstract     = pure ConcreteDef
+  , _scopeInstance     = pure NotInstanceDef
   }
 
 -- | Map functions over the names and modules in a scope.
@@ -1038,7 +1066,7 @@ blockOfLines _  [] = []
 blockOfLines hd ss = hd : map (nest 2) ss
 
 instance Pretty ScopeInfo where
-  pretty (ScopeInfo this mods toBind locals ctx _ _ _ _ _) = vcat $
+  pretty (ScopeInfo this mods toBind locals ctx _ _ _ _ _ _ _ _) = vcat $
     [ "ScopeInfo"
     , "  current = " <> pretty this
     ] ++

@@ -44,6 +44,7 @@ import Agda.TypeChecking.Warnings ( warning )
 import qualified Agda.Utils.AssocList as AssocList
 import Agda.Utils.Function
 import Agda.Utils.Functor
+import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -294,6 +295,29 @@ resolveModule x = do
   caseListNe ms (typeError $ NoSuchModule x) $ \ case
     AbsModule m why :! [] -> return $ AbsModule (m `withRangeOf` x) why
     ms                    -> typeError $ AmbiguousModule x (fmap amodName ms)
+
+loggedAccess :: Lens' (LogAccess a) ScopeInfo -> ScopeM a
+loggedAccess l = do
+  s <- getScope
+  let (x, s') = access l s
+  setScope s'
+  return x
+
+withAccessLog :: forall a b. Lens' (LogAccess a) ScopeInfo -> a -> ScopeM b -> ScopeM (Bool, b)
+withAccessLog l x m =
+  locallyTCState (stScope . l) (const $ pure x) $ do
+    res <- m
+    acc <- wasAccessed <$> useTC (stScope . l)
+    return (acc, res)
+
+isPrivate :: ScopeM Access
+isPrivate = loggedAccess scopePrivate
+
+isAbstract :: ScopeM IsAbstract
+isAbstract = loggedAccess scopeAbstract
+
+isInstance :: ScopeM IsInstance
+isInstance = loggedAccess scopeInstance
 
 -- | Get the fixity of a not yet bound name.
 getConcreteFixity :: C.Name -> ScopeM Fixity'
