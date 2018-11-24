@@ -189,6 +189,13 @@ prettyWarning wng = liftTCM $ case wng of
 
     UselessPublic -> fwords $ "Keyword `public' is ignored here"
 
+    UselessPrivate -> fsep $
+      pwords "Using private here has no effect. Private applies only to declarations that introduce new identifiers into the module, like type signatures and data, record, and module declarations."
+    UselessAbstract -> fsep $
+      pwords "Using abstract here has no effect. Abstract applies to only definitions like data definitions, record type definitions and function clauses."
+    UselessInstance -> fsep $
+      pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
+
     UselessInline q -> fsep $
       pwords "It is pointless for INLINE'd function" ++ [prettyTCM q] ++
       pwords "to have a separate Haskell definition"

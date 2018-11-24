@@ -185,39 +185,50 @@ recordConstructorType decls =
 
     buildType :: [C.NiceDeclaration] -> ScopeM A.Expr
     buildType ds = do
-      tel <- mapM makeBinding ds  -- TODO: Telescope instead of Expr in abstract RecDef
+      tel <- makeBindings ds  -- TODO: Telescope instead of Expr in abstract RecDef
       return $ A.Pi (ExprRange (getRange ds)) tel (A.Set exprNoRange 0)
 
-    makeBinding :: C.NiceDeclaration -> ScopeM A.TypedBindings
+    makeBindings :: [C.NiceDeclaration] -> ScopeM [A.TypedBindings]
+    makeBindings ds = concat <$> mapM makeBinding ds
+
+    makeBinding :: C.NiceDeclaration -> ScopeM [A.TypedBindings]
     makeBinding d = do
       let failure = typeError $ NotValidBeforeField d
           r       = getRange d
           info    = ExprRange r
-          mkLet d = A.TypedBindings r . defaultArg . A.TLet r <$> toAbstract (LetDef d)
+          mkLet d = (:[]) . A.TypedBindings r . defaultArg . A.TLet r <$> toAbstract (LetDef d)
       traceCall (SetRange r) $ case d of
 
-        C.NiceField r pr ab inst x a -> do
-          fx  <- getConcreteFixity x
+        -- Ignore private/abstract/instance blocks for the telescope
+        C.NicePrivate _ _ ds -> makeBindings ds
+        C.NiceAbstract _ ds  -> makeBindings ds
+        C.NiceInstance _ ds  -> makeBindings ds
+
+        C.NiceField r inst x a -> do
+          pr <- inPrivateBlock
+          ab <- inAbstractBlock
+          fx <- getConcreteFixity x
                    -- Ulf 2018-11-23: Is this right? Default hiding instead of
                    -- getHiding a. We also keep the ArgInfo in the TypedBindings.
           let bv = pure $ C.mkBoundName x fx
           tel <- toAbstract $ C.TypedBindings r (C.TBind r [bv] (unArg a) <$ a)
-          return tel
+          return [tel]
 
         -- Public open is allowed and will take effect when scope checking as
         -- proper declarations.
         C.NiceOpen r m dir -> do
           mkLet $ C.NiceOpen r m dir{ publicOpen = False }
-        C.NiceModuleMacro r p x modapp open dir -> do
-          mkLet $ C.NiceModuleMacro r p x modapp open dir{ publicOpen = False }
+        C.NiceModuleMacro r x modapp open dir -> do
+          mkLet $ C.NiceModuleMacro r x modapp open dir{ publicOpen = False }
 
         -- Do some rudimentary matching here to get NotValidBeforeField instead
         -- of NotAValidLetDecl.
         C.NiceMutual _ _ _
-          [ C.FunSig _ _ _ _instanc macro _info _ _ _
-          , C.FunDef _ _ abstract _ _ _
+          [ C.FunSig _ macro _info _ _ _
+          , C.FunDef _ _ _ _
              [ C.Clause _top _catchall (C.LHS _p [] []) (C.RHS _rhs) NoWhere [] ]
-          ] | abstract /= AbstractDef && macro /= MacroDef -> do
+          ] | macro /= MacroDef -> do
+          whenM ((== AbstractDef) <$> inAbstractBlock) failure
           mkLet d
 
         C.NiceMutual{}        -> failure
@@ -731,7 +742,6 @@ scopeCheckExtendedLam r cs = do
   bindName (PrivateAccess Inserted) DefName cname qname
 
   -- Compose a function definition and scope check it.
-  a <- aModeToDef <$> asksTC envAbstractMode
   let
     insertApp :: C.Pattern -> ScopeM C.Pattern
     insertApp (C.RawAppP r es) = return $ C.RawAppP r $ IdentP (C.QName cname) : es
@@ -760,7 +770,7 @@ scopeCheckExtendedLam r cs = do
     --       _ -> __IMPOSSIBLE__
     --   __IMPOSSIBLE__
 
-  d <- C.FunDef r [] a NotInstanceDef __IMPOSSIBLE__ cname <$> do
+  d <- C.FunDef r [] __IMPOSSIBLE__ cname <$> do
           forM cs $ \ (LamClause lhs rhs wh ca) -> do -- wh == NoWhere, see parser for more info
             lhs' <- mapLhsOriginalPatternM insertApp lhs
             return $ C.Clause cname ca lhs' rhs wh []
@@ -1298,8 +1308,10 @@ instance ToAbstract LetDefs [A.LetBinding] where
 instance ToAbstract LetDef [A.LetBinding] where
   toAbstract (LetDef d) =
     case d of
-      NiceMutual _ _ _ d@[C.FunSig _ _ _ instanc macro info _ x t, C.FunDef _ _ abstract _ _ _ [cl]] ->
-          do  when (abstract == AbstractDef) $ do
+      NiceMutual _ _ _ d@[C.FunSig _ macro info _ x t, C.FunDef _ _ _ _ [cl]] -> do
+              abstract <- inAbstractBlock
+              instanc  <- inInstanceBlock
+              when (abstract == AbstractDef) $ do
                 genericError $ "abstract not allowed in let expressions"
               when (macro == MacroDef) $ do
                 genericError $ "Macros cannot be defined in a let expression."
@@ -1322,7 +1334,9 @@ instance ToAbstract LetDef [A.LetBinding] where
                      ]
 
       -- irrefutable let binding, like  (x , y) = rhs
-      NiceFunClause r PublicAccess ConcreteDef termCheck catchall d@(C.FunClause lhs@(C.LHS p [] []) (C.RHS rhs) NoWhere ca) -> do
+      NiceFunClause r termCheck catchall (C.FunClause lhs@(C.LHS p [] []) (C.RHS rhs) NoWhere ca) -> do
+        whenM ((/= PublicAccess) <$> inPrivateBlock)  $ notAValidLetBinding d
+        whenM ((/= ConcreteDef)  <$> inAbstractBlock) $ notAValidLetBinding d
         mp  <- setCurrentRange p $
                  (Right <$> parsePattern p)
                    `catchError`
@@ -1341,8 +1355,8 @@ instance ToAbstract LetDef [A.LetBinding] where
             case definedName p of
               Nothing -> throwError err
               Just x  -> toAbstract $ LetDef $ NiceMutual r termCheck True
-                [ C.FunSig r PublicAccess ConcreteDef NotInstanceDef NotMacroDef defaultArgInfo termCheck x (C.Underscore (getRange x) Nothing)
-                , C.FunDef r __IMPOSSIBLE__ ConcreteDef NotInstanceDef __IMPOSSIBLE__ __IMPOSSIBLE__
+                [ C.FunSig r NotMacroDef defaultArgInfo termCheck x (C.Underscore (getRange x) Nothing)
+                , C.FunDef r __IMPOSSIBLE__ __IMPOSSIBLE__ __IMPOSSIBLE__
                   [C.Clause x (ca || catchall) lhs (C.RHS rhs) NoWhere []]
                 ]
             where
@@ -1380,7 +1394,7 @@ instance ToAbstract LetDef [A.LetBinding] where
               }
         return [A.LetOpen minfo m adir]
 
-      NiceModuleMacro r p x modapp open dir -> do
+      NiceModuleMacro r x modapp open dir -> do
         when (publicOpen dir) $ warning UselessPublic
         -- Andreas, 2014-10-09, Issue 1299: module macros in lets need
         -- to be private
@@ -1423,8 +1437,6 @@ newtype Blind a = Blind { unBlind :: a }
 instance ToAbstract (Blind a) (Blind a) where
   toAbstract = return
 
--- The only reason why we return a list is that open declarations disappears.
--- For every other declaration we get a singleton list.
 instance ToAbstract NiceDeclaration A.Declaration where
 
   toAbstract d = annotateDecls $
@@ -1433,22 +1445,30 @@ instance ToAbstract NiceDeclaration A.Declaration where
       , "  " ++  prettyShow d
       ]) $
     traceCall (ScopeCheckDeclaration d) $
-    -- Andreas, 2015-10-05, Issue 1677:
-    -- We record in the environment whether we are scope checking an
-    -- abstract definition.  This way, we can propagate this attribute
-    -- the extended lambdas.
-    caseMaybe (niceHasAbstract d) id (\ a -> localTC $ \ e -> e { envAbstractMode = aDefToMode a }) $
-    case d of
+    let expand :: Lens' (LogAccess a) ScopeInfo -> Warning -> a -> [NiceDeclaration] -> ScopeM [A.Declaration]
+        expand lens warn x ds = do
+          (used, ds) <- withAccessLog lens x (toAbstract ds)
+          unless used $ warning warn
+          return ds
+    in case d of
+
+    C.NicePrivate r o ds -> expand scopePrivate  UselessPrivate (PrivateAccess o) ds
+    C.NiceAbstract r ds  -> expand scopeAbstract UselessAbstract AbstractDef      ds
+    C.NiceInstance r ds  -> expand scopeInstance UselessInstance InstanceDef      ds
 
   -- Axiom (actual postulate)
-    C.Axiom r p a i rel x t -> do
+    C.Axiom r rel x t -> do
+      p  <- inPrivateBlock
+      a  <- inAbstractBlock
+      i  <- inInstanceBlock
       -- check that we do not postulate in --safe mode
       clo <- commandLineOptions
       when (Lens.getSafeMode clo) (warning $ SafeFlagPostulate x)
       -- check the postulate
       toAbstractNiceAxiom A.NoFunSig NotMacroDef d
 
-    C.NiceGeneralize r p i x t -> do
+    C.NiceGeneralize r i x t -> do
+      p  <- inPrivateBlock
       reportSLn "scope.decl" 10 $ "found nice generalize: " ++ prettyShow x
       t_ <- toAbstractCtx TopCtx t
       let (s, t) = unGeneralized t_
@@ -1459,7 +1479,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
       return [A.Generalize s (mkDefInfoInstance x f p ConcreteDef NotInstanceDef NotMacroDef r) i y t]
 
   -- Fields
-    C.NiceField r p a i x t -> do
+    C.NiceField r i x t -> do
+      p  <- inPrivateBlock
+      a  <- inAbstractBlock
       unless (p == PublicAccess) $ genericError "Record fields can not be private"
       -- Interaction points for record fields have already been introduced
       -- when checking the type of the record constructor.
@@ -1483,7 +1505,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
       return [ A.Field (mkDefInfoInstance x f p a i NotMacroDef r) y t' ]
 
   -- Primitive function
-    PrimitiveFunction r p a x t -> do
+    PrimitiveFunction r x t -> do
+      p  <- inPrivateBlock
+      a  <- inAbstractBlock
       t' <- toAbstractCtx TopCtx t
       f  <- getConcreteFixity x
       y  <- freshAbstractQName f x
@@ -1496,7 +1520,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
       -- We only termination check blocks that do not have a measure.
       return [ A.Mutual (MutualInfo termCheck pc r) ds' ]
 
-    C.NiceRecSig r p a _pc _uc x ls t -> do
+    C.NiceRecSig r _pc _uc x ls t -> do
+      p  <- inPrivateBlock
+      a  <- inAbstractBlock
       ensureNoLetStms ls
       withLocalVars $ do
         ls' <- toAbstract (map makeDomainFull ls)
@@ -1506,8 +1532,10 @@ instance ToAbstract NiceDeclaration A.Declaration where
         bindName p DefName x x'
         return [ A.RecSig (mkDefInfo x f p a r) x' ls' t' ]
 
-    C.NiceDataSig r p a _pc _uc x ls t -> withLocalVars $ do
+    C.NiceDataSig r _pc _uc x ls t -> withLocalVars $ do
         printScope "scope.data.sig" 20 ("checking DataSig for " ++ prettyShow x)
+        p  <- inPrivateBlock
+        a  <- inAbstractBlock
         ensureNoLetStms ls
         ls' <- toAbstract (map makeDomainFull ls)
         t'  <- toAbstract t
@@ -1519,12 +1547,14 @@ instance ToAbstract NiceDeclaration A.Declaration where
         return [ A.DataSig (mkDefInfo x f p a r) x' ls' t' ]
 
   -- Type signatures
-    C.FunSig r p a i m rel tc x t ->
-        toAbstractNiceAxiom A.FunSig m (C.Axiom r p a i rel x t)
+    C.FunSig r m rel tc x t ->
+        toAbstractNiceAxiom A.FunSig m (C.Axiom r rel x t)
 
   -- Function definitions
-    C.FunDef r ds a i tc x cs -> do
+    C.FunDef r ds tc x cs -> do
         printLocals 10 $ "checking def " ++ prettyShow x
+        a <- inAbstractBlock
+        i <- inInstanceBlock
         (x',cs) <- toAbstract (OldName x,cs)
         -- Andreas, 2017-12-04 the name must reside in the current module
         unlessM ((A.qnameModule x' ==) <$> getCurrentModule) $
@@ -1535,14 +1565,15 @@ instance ToAbstract NiceDeclaration A.Declaration where
         return [ A.FunDef (mkDefInfoInstance x f PublicAccess a i NotMacroDef r) x' delayed cs ]
 
   -- Uncategorized function clauses
-    C.NiceFunClause r acc abs termCheck catchall (C.FunClause lhs rhs wcls ca) ->
+    C.NiceFunClause r termCheck catchall (C.FunClause lhs rhs wcls ca) ->
       genericError $
         "Missing type signature for left hand side " ++ prettyShow lhs
     C.NiceFunClause{} -> __IMPOSSIBLE__
 
   -- Data definitions
-    C.DataDef r a _ uc x pars cons -> withLocalVars $ do
+    C.DataDef r _ uc x pars cons -> withLocalVars $ do
         printScope "scope.data.def" 20 ("checking DataDef for " ++ prettyShow x)
+        a <- inAbstractBlock
         (p, ax) <- resolveName (C.QName x) >>= \case
           DefinedName p ax -> do
             livesInCurrentModule ax  -- Andreas, 2017-12-04, issue #2862
@@ -1564,17 +1595,18 @@ instance ToAbstract NiceDeclaration A.Declaration where
         let m = mnameFromList $ qnameToList x'
         createModule (Just IsData) m
         bindModule p x m  -- make it a proper module
-        cons <- toAbstract (map (ConstrDecl NoRec m a p) cons)
+        cons <- toAbstract (map (ConstrDecl NoRec m) cons)
         printScope "data" 20 $ "Checked data " ++ prettyShow x
         f <- getConcreteFixity x
         return [ A.DataDef (mkDefInfo x f PublicAccess a r) x' uc pars cons ]
       where
-        conName (C.Axiom _ _ _ _ _ c _) = return c
+        conName (C.Axiom _ _ c _) = return c
         conName d = errorNotConstrDecl d
 
   -- Record definitions (mucho interesting)
-    C.RecDef r a _ uc x ind eta cm pars fields -> do
+    C.RecDef r _ uc x ind eta cm pars fields -> do
       printScope "scope.rec.def" 20 ("checking RecDef for " ++ prettyShow x)
+      a <- inAbstractBlock
       (p, ax) <- resolveName (C.QName x) >>= \case
         DefinedName p ax -> do
           livesInCurrentModule ax  -- Andreas, 2017-12-04, issue #2862
@@ -1616,12 +1648,13 @@ instance ToAbstract NiceDeclaration A.Declaration where
         f <- getConcreteFixity x
         return [ A.RecDef (mkDefInfoInstance x f PublicAccess a inst NotMacroDef r) x' uc ind eta cm' pars contel afields ]
 
-    NiceModule r p a x@(C.QName name) tel ds -> do
+    NiceModule r x@(C.QName name) tel ds -> do
       reportSDoc "scope.decl" 70 $ vcat $
         [ text $ "scope checking NiceModule " ++ prettyShow x
         ]
 
-      adecls <- traceCall (ScopeCheckDeclaration $ NiceModule r p a x tel []) $ do
+      p <- inPrivateBlock
+      adecls <- traceCall (ScopeCheckDeclaration $ NiceModule r x tel []) $ do
         scopeCheckNiceModule r p name tel $ toAbstract ds
 
       reportSDoc "scope.decl" 70 $ vcat $
@@ -1629,14 +1662,15 @@ instance ToAbstract NiceDeclaration A.Declaration where
         ] ++ map (nest 2 . prettyA) adecls
       return adecls
 
-    NiceModule _ _ _ m@C.Qual{} _ _ ->
+    NiceModule _ m@C.Qual{} _ _ ->
       genericError $ "Local modules cannot have qualified names"
 
-    NiceModuleMacro r p x modapp open dir -> do
+    NiceModuleMacro r x modapp open dir -> do
       reportSDoc "scope.decl" 70 $ vcat $
         [ text $ "scope checking NiceModuleMacro " ++ prettyShow x
         ]
 
+      p <- inPrivateBlock
       adecls <- checkModuleMacro Apply TopOpenModule r p x modapp open dir
 
       reportSDoc "scope.decl" 70 $ vcat $
@@ -1710,7 +1744,10 @@ instance ToAbstract NiceDeclaration A.Declaration where
             }
       return [ A.Import minfo m adir ]
 
-    NiceUnquoteDecl r p a i tc xs e -> do
+    NiceUnquoteDecl r tc xs e -> do
+      p <- inPrivateBlock
+      a <- inAbstractBlock
+      i <- inInstanceBlock
       fxs <- mapM getConcreteFixity xs
       ys <- zipWithM freshAbstractQName fxs xs
       zipWithM_ (bindName p QuotableName) xs ys
@@ -1719,7 +1756,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
       let mi = MutualInfo tc True r
       return [ A.Mutual mi [A.UnquoteDecl mi [ mkDefInfoInstance x fx p a i NotMacroDef r | (fx, x) <- zip fxs xs ] ys e] ]
 
-    NiceUnquoteDef r p a tc xs e -> do
+    NiceUnquoteDef r tc xs e -> do
+      p <- inPrivateBlock
+      a <- inAbstractBlock
       fxs <- mapM getConcreteFixity xs
       ys <- mapM (toAbstract . OldName) xs
       zipWithM_ (rebindName p QuotableName) xs ys
@@ -1729,6 +1768,7 @@ instance ToAbstract NiceDeclaration A.Declaration where
 
     NicePatternSyn r n as p -> do
       reportSLn "scope.pat" 10 $ "found nice pattern syn: " ++ prettyShow n
+      private <- inPrivateBlock
       (as, p) <- withLocalVars $ do
          p  <- toAbstract =<< parsePatternSyn p
          checkPatternLinearity p $ \ys ->
@@ -1743,7 +1783,7 @@ instance ToAbstract NiceDeclaration A.Declaration where
                sep (map prettyA xs)
          return (as, p)
       y <- freshAbstractQName' n
-      bindName PublicAccess PatternSynName n y
+      bindName private PatternSynName n y
       -- Expanding pattern synonyms already at definition makes it easier to
       -- fold them back when printing (issue #2762).
       ep <- expandPatternSynonyms p
@@ -1754,7 +1794,10 @@ instance ToAbstract NiceDeclaration A.Declaration where
 
     where
       -- checking postulate or type sig. without checking safe flag
-      toAbstractNiceAxiom funSig isMacro (C.Axiom r p a i info x t) = do
+      toAbstractNiceAxiom funSig isMacro (C.Axiom r info x t) = do
+        p  <- inPrivateBlock
+        a  <- inAbstractBlock
+        i  <- inInstanceBlock
         t' <- toAbstractCtx TopCtx t
         f  <- getConcreteFixity x
         mp <- getConcretePolarity x
@@ -1816,7 +1859,7 @@ instance LivesInCurrentModule A.QName where
       genericError $ "Definition in different module than its type signature"
 
 data IsRecordCon = YesRec | NoRec
-data ConstrDecl = ConstrDecl IsRecordCon A.ModuleName IsAbstract Access C.NiceDeclaration
+data ConstrDecl = ConstrDecl IsRecordCon A.ModuleName C.NiceDeclaration
 
 bindConstructorName :: ModuleName -> C.Name -> IsAbstract ->
                        Access -> IsRecordCon -> ScopeM A.QName
@@ -1840,11 +1883,12 @@ bindConstructorName m x a p record = do
             _                -> PublicAccess
 
 instance ToAbstract ConstrDecl A.Declaration where
-  toAbstract (ConstrDecl record m a p d) = do
+  toAbstract (ConstrDecl record m d) = do
     case d of
-      C.Axiom r p1 a1 i info x t -> do -- rel==Relevant
-        -- unless (p1 == p) __IMPOSSIBLE__  -- This invariant is currently violated by test/Succeed/Issue282.agda
-        unless (a1 == a) __IMPOSSIBLE__
+      C.Axiom r info x t -> do -- rel==Relevant
+        a <- inAbstractBlock
+        p <- inPrivateBlock
+        i <- inInstanceBlock
         t' <- toAbstractCtx TopCtx t
         -- The abstract name is the qualified one
         -- Bind it twice, once unqualified and once qualified

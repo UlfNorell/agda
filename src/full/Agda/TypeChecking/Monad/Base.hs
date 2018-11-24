@@ -2658,6 +2658,9 @@ data Warning
   | UselessPublic
     -- ^ If the user opens a module public before the module header.
     --   (See issue #2377.)
+  | UselessPrivate
+  | UselessAbstract
+  | UselessInstance
   | UselessInline            QName
   | InversionDepthReached    QName
   -- ^ The --inversion-max-depth was reached.
@@ -2724,8 +2727,10 @@ warningName w = case w of
   UnsolvedMetaVariables{}      -> UnsolvedMetaVariables_
   UselessInline{}              -> UselessInline_
   UselessPublic                -> UselessPublic_
+  UselessPrivate               -> UselessPrivate_
+  UselessAbstract              -> UselessAbstract_
+  UselessInstance              -> UselessInstance_
   UserWarning{}                -> UserWarning_
-
 
 data TCWarning
   = TCWarning

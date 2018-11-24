@@ -611,6 +611,9 @@ warningHighlighting w = case tcWarning w of
   EmptyRewritePragma{}       -> deadcodeHighlighting $ P.getRange w
   IllformedAsClause{}        -> deadcodeHighlighting $ P.getRange w
   UselessPublic{}            -> mempty
+  UselessPrivate{}           -> mempty
+  UselessAbstract{}          -> mempty
+  UselessInstance{}          -> mempty
   UselessInline{}            -> mempty
   ParseWarning{}             -> mempty
   InversionDepthReached{}    -> mempty
@@ -640,9 +643,6 @@ warningHighlighting w = case tcWarning w of
     EmptyPostulate{}     -> deadcodeHighlighting $ P.getRange w
     EmptyPrivate{}       -> deadcodeHighlighting $ P.getRange w
     EmptyGeneralize{}    -> deadcodeHighlighting $ P.getRange w
-    UselessAbstract{}    -> deadcodeHighlighting $ P.getRange w
-    UselessInstance{}    -> deadcodeHighlighting $ P.getRange w
-    UselessPrivate{}     -> deadcodeHighlighting $ P.getRange w
     _ -> mempty -- TODO: explore highlighting opportunities here!
 
 

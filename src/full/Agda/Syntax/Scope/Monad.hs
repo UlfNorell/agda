@@ -310,14 +310,14 @@ withAccessLog l x m =
     acc <- wasAccessed <$> useTC (stScope . l)
     return (acc, res)
 
-isPrivate :: ScopeM Access
-isPrivate = loggedAccess scopePrivate
+inPrivateBlock :: ScopeM Access
+inPrivateBlock = loggedAccess scopePrivate
 
-isAbstract :: ScopeM IsAbstract
-isAbstract = loggedAccess scopeAbstract
+inAbstractBlock :: ScopeM IsAbstract
+inAbstractBlock = loggedAccess scopeAbstract
 
-isInstance :: ScopeM IsInstance
-isInstance = loggedAccess scopeInstance
+inInstanceBlock :: ScopeM IsInstance
+inInstanceBlock = loggedAccess scopeInstance
 
 -- | Get the fixity of a not yet bound name.
 getConcreteFixity :: C.Name -> ScopeM Fixity'

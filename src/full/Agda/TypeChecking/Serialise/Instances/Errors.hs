@@ -67,6 +67,9 @@ instance EmbPrj Warning where
   icod_ (CantGeneralizeOverSorts a)  = icodeN 14 CantGeneralizeOverSorts a
   icod_ IllformedAsClause            = icodeN 15 IllformedAsClause
   icod_ WithoutKFlagPrimEraseEquality = icodeN 16 WithoutKFlagPrimEraseEquality
+  icod_ UselessPrivate                = icodeN 17 UselessPrivate
+  icod_ UselessAbstract               = icodeN 18 UselessAbstract
+  icod_ UselessInstance               = icodeN 19 UselessInstance
 
   value = vcase valu where
       valu [0, a, b]    = valuN UnreachableClauses a b
@@ -86,6 +89,9 @@ instance EmbPrj Warning where
       valu [14, a]      = valuN CantGeneralizeOverSorts a
       valu [15]         = valuN IllformedAsClause
       valu [16]         = valuN WithoutKFlagPrimEraseEquality
+      valu [17]         = valuN UselessPrivate
+      valu [18]         = valuN UselessAbstract
+      valu [19]         = valuN UselessInstance
       valu _ = malformed
 
 instance EmbPrj DeclarationWarning where
@@ -93,9 +99,6 @@ instance EmbPrj DeclarationWarning where
     UnknownNamesInFixityDecl a        -> icodeN 0 UnknownNamesInFixityDecl a
     UnknownNamesInPolarityPragmas a   -> icodeN 1 UnknownNamesInPolarityPragmas a
     PolarityPragmasButNotPostulates a -> icodeN 2 PolarityPragmasButNotPostulates a
-    UselessPrivate a                  -> icodeN 3 UselessPrivate a
-    UselessAbstract a                 -> icodeN 4 UselessAbstract a
-    UselessInstance a                 -> icodeN 5 UselessInstance a
     EmptyMutual a                     -> icodeN 6 EmptyMutual a
     EmptyAbstract a                   -> icodeN 7 EmptyAbstract a
     EmptyPrivate a                    -> icodeN 8 EmptyPrivate a
@@ -116,9 +119,6 @@ instance EmbPrj DeclarationWarning where
     [0, a]   -> valuN UnknownNamesInFixityDecl a
     [1, a]   -> valuN UnknownNamesInPolarityPragmas a
     [2, a]   -> valuN PolarityPragmasButNotPostulates a
-    [3, a]   -> valuN UselessPrivate a
-    [4, a]   -> valuN UselessAbstract a
-    [5, a]   -> valuN UselessInstance a
     [6, a]   -> valuN EmptyMutual a
     [7, a]   -> valuN EmptyAbstract a
     [8, a]   -> valuN EmptyPrivate a

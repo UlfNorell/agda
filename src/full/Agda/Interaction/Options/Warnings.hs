@@ -266,7 +266,7 @@ warningNameDescription w = case w of
   OldBuiltin_                      -> "Deprecated `BUILTIN' pragmas."
   EmptyRewritePragma_              -> "Empty `REWRITE' pragmas."
   IllformedAsClause_               -> "Illformed `as'-clauses in `import' statements."
-  UselessPublic_                   -> "`public' blocks where they have no effect."
+  UselessPublic_                   -> "`public' modifier where is has no effect."
   UselessInline_                   -> "`INLINE' pragmas where they have no effect."
   UnreachableClauses_              -> "Unreachable function clauses."
   GenericWarning_                  -> ""
