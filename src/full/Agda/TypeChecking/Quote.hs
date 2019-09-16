@@ -31,7 +31,6 @@ data QuotingKit = QuotingKit
   , quoteClauseWithKit :: Clause     -> ReduceM Term
   , quoteDomWithKit    :: Dom Type   -> ReduceM Term
   , quoteDefnWithKit   :: Definition -> ReduceM Term
-  , quoteListWithKit   :: forall a. (a -> ReduceM Term) -> [a] -> ReduceM Term
   }
 
 quotingKit :: TCM QuotingKit
@@ -266,7 +265,7 @@ quotingKit = do
           Constructor{conData = d} ->
             agdaDefinitionDataConstructor !@! quoteName d
 
-  return $ QuotingKit quoteTerm quoteType quoteClause (quoteDom quoteType) quoteDefn quoteList
+  return $ QuotingKit quoteTerm quoteType quoteClause (quoteDom quoteType) quoteDefn
 
 quoteString :: String -> Term
 quoteString = Lit . LitString noRange
@@ -313,7 +312,3 @@ quoteDefn def = do
   kit <- quotingKit
   runReduceM (quoteDefnWithKit kit def)
 
-quoteList :: [Term] -> TCM Term
-quoteList xs = do
-  kit <- quotingKit
-  runReduceM (quoteListWithKit kit pure xs)
