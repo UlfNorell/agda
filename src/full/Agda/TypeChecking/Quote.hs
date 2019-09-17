@@ -10,6 +10,7 @@ import Data.Void
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern ( dbPatPerm' )
+import Agda.Syntax.Internal.Generic
 import Agda.Syntax.Literal
 import Agda.Syntax.Position
 
@@ -18,6 +19,7 @@ import Agda.TypeChecking.DropArgs
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Monad.Builtin.ConstructorForm
 import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Impossible
@@ -288,6 +290,13 @@ quoteTerm :: Term -> TCM Term
 quoteTerm v = do
   kit <- quotingKit
   runReduceM (quoteTermWithKit kit v)
+
+quoteTermWithKit' :: Monad m => QuotedTermKit -> Term -> m Term
+quoteTermWithKit' kit v = quoteDeep $ QuotedTerm Nothing v Nothing
+  where
+    quoteDeep = traverseTermM qlit . quotedTermConstructorForm kit
+    qlit (Lit (LitTerm _ q)) = quoteDeep q
+    qlit v                   = return v
 
 makeQuotedTerm :: Type -> Term -> TCM Term
 makeQuotedTerm a v = inFreshModuleIfFreeParams $ do
