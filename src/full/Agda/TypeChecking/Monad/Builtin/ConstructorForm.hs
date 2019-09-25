@@ -239,9 +239,8 @@ quotedTermConstructorForm kit@QuotedTermKit{..} q = quoteTerm (quotedTerm q)
     quoteLit (LitTerm _ q) = quoteTerm $ quoteTerm $ quotedTerm q
 
     quoteSortLevelTerm :: Level -> Term
-    quoteSortLevelTerm (Max [])              = qkitSortLit $$ Lit (LitNat noRange 0)
-    quoteSortLevelTerm (Max [ClosedLevel n]) = qkitSortLit $$ Lit (LitNat noRange n)
-    quoteSortLevelTerm l                     = qkitSortSet $$ quoteTerm (unlevelWithKit qkitLevels l)
+    quoteSortLevelTerm (ClosedLevel n) = qkitSortLit $$ Lit (LitNat noRange n)
+    quoteSortLevelTerm l               = qkitSortSet $$ quoteTerm (unlevelWithKit qkitLevels l)
 
     quoteSort :: Sort -> Term
     quoteSort (Type t)     = quoteSortLevelTerm t
