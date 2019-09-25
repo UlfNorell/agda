@@ -145,6 +145,7 @@ data PragmaOptions = PragmaOptions
   , optCompletenessCheck         :: Bool
   , optUniverseCheck             :: Bool
   , optOmegaInOmega              :: Bool
+  , optCumulativity              :: Bool
   , optSizedTypes                :: WithDefault 'True
   , optGuardedness               :: WithDefault 'True
   , optInjectiveTypeConstructors :: Bool
@@ -169,6 +170,7 @@ data PragmaOptions = PragmaOptions
   , optSafe                      :: Bool
   , optDoubleCheck               :: Bool
   , optSyntacticEquality         :: Bool  -- ^ Should conversion checker use syntactic equality shortcut?
+  , optCompareSorts              :: Bool  -- ^ Should conversion checker compare sorts of types?
   , optWarningMode               :: WarningMode
   , optCompileNoMain             :: Bool
   , optCaching                   :: Bool
@@ -256,6 +258,7 @@ defaultPragmaOptions = PragmaOptions
   , optCompletenessCheck         = True
   , optUniverseCheck             = True
   , optOmegaInOmega              = False
+  , optCumulativity              = False
   , optSizedTypes                = Default
   , optGuardedness               = Default
   , optInjectiveTypeConstructors = False
@@ -276,6 +279,7 @@ defaultPragmaOptions = PragmaOptions
   , optSafe                      = False
   , optDoubleCheck               = False
   , optSyntacticEquality         = True
+  , optCompareSorts              = True
   , optWarningMode               = defaultWarningMode
   , optCompileNoMain             = False
   , optCaching                   = True
@@ -388,6 +392,7 @@ unsafePragmaOptions opts =
   [ "--rewriting"                                | optRewriting opts                 ] ++
   [ "--cubical and --with-K"                     | optCubical opts
                                                  , not (collapseDefault $ optWithoutK opts) ] ++
+  [ "--cumulativity"                             | optCumulativity opts              ] ++
   []
 
 -- | If any these options have changed, then the file will be
@@ -404,6 +409,7 @@ restartOptions =
   , (B . optTerminationCheck,  "--no-termination-check")
   , (B . not . optUniverseCheck, "--type-in-type")
   , (B . optOmegaInOmega, "--omega-in-omega")
+  , (B . optCumulativity, "--cumulativity")
   , (B . not . collapseDefault . optSizedTypes, "--no-sized-types")
   , (B . not . collapseDefault . optGuardedness, "--no-guardedness")
   , (B . optInjectiveTypeConstructors, "--injective-type-constructors")
@@ -420,6 +426,7 @@ restartOptions =
   , (B . optSafe, "--safe")
   , (B . optDoubleCheck, "--double-check")
   , (B . not . optSyntacticEquality, "--no-syntactic-equality")
+  , (B . not . optCompareSorts, "--no-sort-comparison")
   , (B . not . optAutoInline, "--no-auto-inline")
   , (B . not . optFastReduce, "--no-fast-reduce")
   , (I . optInstanceSearchDepth, "--instance-search-depth")
@@ -489,6 +496,9 @@ doubleCheckFlag o = return $ o { optDoubleCheck = True }
 
 noSyntacticEqualityFlag :: Flag PragmaOptions
 noSyntacticEqualityFlag o = return $ o { optSyntacticEquality = False }
+
+noSortComparisonFlag :: Flag PragmaOptions
+noSortComparisonFlag o = return $ o { optCompareSorts = False }
 
 sharingFlag :: Bool -> Flag CommandLineOptions
 sharingFlag _ _ = throwError $
@@ -606,6 +616,9 @@ dontUniverseCheckFlag o = return $ o { optUniverseCheck = False }
 
 omegaInOmegaFlag :: Flag PragmaOptions
 omegaInOmegaFlag o = return $ o { optOmegaInOmega = True }
+
+cumulativityFlag :: Flag PragmaOptions
+cumulativityFlag o = return $ o { optCumulativity = True }
 
 --UNUSED Liang-Ting Chen 2019-07-16
 --etaFlag :: Flag PragmaOptions
@@ -895,6 +908,8 @@ pragmaOptions =
                     "ignore universe levels (this makes Agda inconsistent)"
     , Option []     ["omega-in-omega"] (NoArg omegaInOmegaFlag)
                     "enable typing rule Setω : Setω (this makes Agda inconsistent)"
+    , Option []     ["cumulativity"] (NoArg cumulativityFlag)
+                    "enable subtyping of universes (e.g. Set =< Set₁)"
     , Option []     ["prop"] (NoArg propFlag)
                     "enable the use of the Prop universe"
     , Option []     ["no-prop"] (NoArg noPropFlag)
@@ -967,6 +982,8 @@ pragmaOptions =
                     "enable double-checking of all terms using the internal typechecker"
     , Option []     ["no-syntactic-equality"] (NoArg noSyntacticEqualityFlag)
                     "disable the syntactic equality shortcut in the conversion checker"
+    , Option []     ["no-sort-comparison"] (NoArg noSortComparisonFlag)
+                    "disable the comparison of sorts when checking conversion of types"
     , Option ['W']  ["warning"] (ReqArg warningModeFlag "FLAG")
                     ("set warning flags. See --help=warning.")
     , Option []     ["no-main"] (NoArg compileFlagNoMain)

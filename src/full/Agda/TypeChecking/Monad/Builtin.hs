@@ -180,15 +180,16 @@ builtinLevelKit' = runMaybeT $ do
       }
 
 unlevelWithKit :: LevelKit -> Level -> Term
-unlevelWithKit LevelKit{ lvlZero = zer, lvlSuc = suc, lvlMax = max } (Max as) =
-  case map (unPlusV zer suc) as of
-    [a] -> a
-    []  -> zer
-    as  -> foldl1 max as
+unlevelWithKit LevelKit{ lvlZero = zer, lvlSuc = suc, lvlMax = max } = \case
+  Max m []  -> unConstV zer suc m
+  Max 0 [a] -> unPlusV suc a
+  Max m as  -> foldl1 max $ [ unConstV zer suc m | m > 0 ] ++ map (unPlusV suc) as
 
-unPlusV :: Term -> (Term -> Term) -> PlusLevel -> Term
-unPlusV zer suc (ClosedLevel n) = foldr (.) id (genericReplicate n suc) zer
-unPlusV _   suc (Plus n a)      = foldr (.) id (genericReplicate n suc) (unLevelAtom a)
+unConstV :: Term -> (Term -> Term) -> Integer -> Term
+unConstV zer suc n = foldr (.) id (List.genericReplicate n suc) zer
+
+unPlusV :: (Term -> Term) -> PlusLevel -> Term
+unPlusV suc (Plus n a) = foldr (.) id (List.genericReplicate n suc) (unLevelAtom a)
 
 ---------------------------------------------------------------------------
 -- * The names of built-in things

@@ -26,6 +26,8 @@ import Control.Monad
 import Data.Functor
 import Data.Maybe
 
+import Agda.Interaction.Options (optCumulativity)
+
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
 
@@ -40,7 +42,6 @@ import Agda.TypeChecking.Monad.Context
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.MetaVars (metaType)
 import Agda.TypeChecking.Monad.Signature (HasConstInfo(..), applyDef)
-import Agda.TypeChecking.Pretty ()
 import Agda.TypeChecking.ProjectionLike (elimView)
 import Agda.TypeChecking.Records (getDefType)
 import Agda.TypeChecking.Reduce
@@ -50,6 +51,7 @@ import Agda.TypeChecking.Telescope
 import Agda.Utils.Except
 import Agda.Utils.Impossible
 import Agda.Utils.Lens
+import Agda.Utils.Monad
 
 -- | Infer the sort of another sort. If we can compute the bigger sort
 --   straight away, return that. Otherwise, return @UnivSort s@ and add a
@@ -69,7 +71,9 @@ inferUnivSort s = do
 sortFitsIn :: MonadConversion m => Sort -> Sort -> m ()
 sortFitsIn a b = do
   b' <- inferUnivSort a
-  equalSort b' b -- CUMULATIVITY: leqSort b' b
+  ifM (optCumulativity <$> pragmaOptions)
+    (leqSort b' b)
+    (equalSort b' b)
 
 hasBiggerSort :: Sort -> TCM ()
 hasBiggerSort = void . inferUnivSort
@@ -106,13 +110,17 @@ inferFunSort a s = inferPiSort a $ NoAbs underscore s
 ptsRule :: Dom Type -> Abs Sort -> Sort -> TCM ()
 ptsRule a b c = do
   c' <- inferPiSort a b
-  equalSort c' c -- CUMULATIVITY: leqSort c' c
+  ifM (optCumulativity <$> pragmaOptions)
+    (leqSort c' c)
+    (equalSort c' c)
 
 -- | Non-dependent version of ptsRule
 ptsRule' :: Dom Type -> Sort -> Sort -> TCM ()
 ptsRule' a b c = do
   c' <- inferFunSort a b
-  equalSort c' c -- CUMULATIVITY: leqSort c' c
+  ifM (optCumulativity <$> pragmaOptions)
+    (leqSort c' c)
+    (equalSort c' c)
 
 hasPTSRule :: Dom Type -> Abs Sort -> TCM ()
 hasPTSRule a b = void $ inferPiSort a b
@@ -146,10 +154,15 @@ shouldBeSort t = ifIsSort t return (typeError $ ShouldBeASort t)
 --
 --   Precondition: given term is a well-sorted type.
 sortOf
-  :: forall m. (MonadReduce m, MonadTCEnv m, HasBuiltins m, HasConstInfo m)
+  :: forall m. (MonadReduce m, MonadTCEnv m, MonadAddContext m, HasBuiltins m, HasConstInfo m)
   => Term -> m Sort
 sortOf t = elimView True t >>= \case
-  Pi a b     -> return $ piSort a (getSort <$> b)
+  Pi adom b -> do
+    let a = unEl $ unDom adom
+    sa <- sortOf a
+    let adom' = adom { unDom = El sa a }
+    sb <- mapAbstraction adom' (sortOf . unEl) b
+    return $ piSort adom' sb
   Sort s     -> do
     ui <- univInf
     return $ univSort ui s

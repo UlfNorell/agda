@@ -991,8 +991,6 @@ instance BlankVars A.Expr where
     A.Rec i es             -> A.Rec i $ blank bound es
     A.RecUpdate i e es     -> uncurry (A.RecUpdate i) $ blank bound (e, es)
     A.ETel _               -> __IMPOSSIBLE__
-    A.QuoteGoal {}         -> __IMPOSSIBLE__
-    A.QuoteContext {}      -> __IMPOSSIBLE__
     A.Quote {}             -> __IMPOSSIBLE__
     A.QuoteTerm {}         -> __IMPOSSIBLE__
     A.Unquote {}           -> __IMPOSSIBLE__
@@ -1243,13 +1241,11 @@ instance Reify Sort Expr where
     reify s = do
       s <- instantiateFull s
       case s of
-        I.Type (I.Max [])                -> return $ A.Set noExprInfo 0
-        I.Type (I.Max [I.ClosedLevel n]) -> return $ A.Set noExprInfo n
+        I.Type (I.ClosedLevel n) -> return $ A.Set noExprInfo n
         I.Type a -> do
           a <- reify a
           return $ A.App defaultAppInfo_ (A.Set noExprInfo 0) (defaultNamedArg a)
-        I.Prop (I.Max [])                -> return $ A.Prop noExprInfo 0
-        I.Prop (I.Max [I.ClosedLevel n]) -> return $ A.Prop noExprInfo n
+        I.Prop (I.ClosedLevel n) -> return $ A.Prop noExprInfo n
         I.Prop a -> do
           a <- reify a
           return $ A.App defaultAppInfo_ (A.Prop noExprInfo 0) (defaultNamedArg a)

@@ -68,7 +68,6 @@ import Agda.Utils.Except
   , runExceptT
   )
 import Agda.Utils.Functor
-import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
