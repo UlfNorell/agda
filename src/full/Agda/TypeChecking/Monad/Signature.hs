@@ -45,6 +45,7 @@ import Agda.TypeChecking.Coverage.SplitTree
 import {-# SOURCE #-} Agda.TypeChecking.CompiledClause.Compile
 import {-# SOURCE #-} Agda.TypeChecking.Polarity
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
+import {-# SOURCE #-} Agda.TypeChecking.Reduce (unfoldInlinedTCM)
 
 import {-# SOURCE #-} Agda.Compiler.Treeless.Erase
 
@@ -429,7 +430,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                     , defMatchable      = Set.empty
                     , defNoCompilation  = defNoCompilation d
                     , defInjective      = False
-                    , defCopatternLHS   = isCopatternLHS [cl]
+                    , defCopatternLHS   = isCopatternLHS $ defnClauses df
                     , theDef            = df }
             oldDef = theDef d
             isCon  = case oldDef of { Constructor{} -> True ; _ -> False }
@@ -449,7 +450,8 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                             , projProper= fmap copyName $ projProper p
                             }
               _ -> Nothing
-            def =
+            def = do
+              cl <- computeClause
               case oldDef of
                 Constructor{ conPars = np, conData = d } -> return $
                   oldDef { conPars = np - size ts'
@@ -485,17 +487,20 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                   reportSDoc "tc.mod.apply" 80 $ return $ ("new def for" <+> pretty x) <?> pretty newDef
                   return newDef
 
-            cl = Clause { clauseLHSRange  = getRange $ defClauses d
-                        , clauseFullRange = getRange $ defClauses d
-                        , clauseTel       = EmptyTel
-                        , namedClausePats = []
-                        , clauseBody      = Just $ dropArgs pars $ case oldDef of
-                            Function{funProjection = Just p} -> projDropParsApply p ProjSystem ts'
-                            _ -> Def x $ map Apply ts'
-                        , clauseType      = Just $ defaultArg t
-                        , clauseCatchall  = False
-                        , clauseUnreachable = Just False -- definitely not unreachable
-                        }
+            computeClause = do
+              body <- unfoldInlinedTCM $ dropArgs pars $ case oldDef of
+                         Function{funProjection = Just p} -> projDropParsApply p ProjSystem ts'
+                         _                                -> Def x $ map Apply ts'
+              return $
+                Clause { clauseLHSRange  = getRange $ defClauses d
+                       , clauseFullRange = getRange $ defClauses d
+                       , clauseTel       = EmptyTel
+                       , namedClausePats = []
+                       , clauseBody      = Just body
+                       , clauseType      = Just $ defaultArg t
+                       , clauseCatchall  = False
+                       , clauseUnreachable = Just False -- definitely not unreachable
+                       }
               where
                 -- The number of remaining parameters. We need to drop the
                 -- lambdas corresponding to these from the clause body above.

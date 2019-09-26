@@ -684,6 +684,10 @@ unfoldInlined v = do
         _ -> return v
     _ -> return v
 
+-- | Used in 'Agda.TypeChecking.Monad.Signature' where we can't depend on MonadReduce.
+unfoldInlinedTCM :: Term -> TCM Term
+unfoldInlinedTCM = unfoldInlined
+
 -- | Apply a definition using the compiled clauses, or fall back to
 --   ordinary clauses if no compiled clauses exist.
 appDef_ :: QName -> Term -> [Clause] -> Maybe CompiledClauses -> RewriteRules -> MaybeReducedArgs -> ReduceM (Reduced (Blocked Term) Term)

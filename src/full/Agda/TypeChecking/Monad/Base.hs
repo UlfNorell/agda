@@ -2212,11 +2212,14 @@ primFun :: QName -> Arity -> ([Arg Term] -> ReduceM (Reduced MaybeReducedArgs Te
 primFun q ar imp = PrimFun q ar (\ args _ -> imp args)
 
 defClauses :: Definition -> [Clause]
-defClauses Defn{theDef = Function{funClauses = cs}}        = cs
-defClauses Defn{theDef = Primitive{primClauses = cs}}      = cs
-defClauses Defn{theDef = Datatype{dataClause = Just c}}    = [c]
-defClauses Defn{theDef = Record{recClause = Just c}}       = [c]
-defClauses _                                               = []
+defClauses = defnClauses . theDef
+
+defnClauses :: Defn -> [Clause]
+defnClauses Function{funClauses = cs}     = cs
+defnClauses Primitive{primClauses = cs}   = cs
+defnClauses Datatype{dataClause = Just c} = [c]
+defnClauses Record{recClause = Just c}    = [c]
+defnClauses _                             = []
 
 defCompiled :: Definition -> Maybe CompiledClauses
 defCompiled Defn{theDef = Function {funCompiled  = mcc}} = mcc
