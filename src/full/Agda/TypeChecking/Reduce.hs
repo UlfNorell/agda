@@ -672,13 +672,15 @@ reduceHead v = do -- ignoreAbstractMode $ do
 -- | Unfold a single inlined function.
 unfoldInlined :: (HasConstInfo m, MonadReduce m) => Term -> m Term
 unfoldInlined v = do
-  inTypes <- viewTC eWorkingOnTypes
   case v of
-    _ | inTypes -> return v -- Don't inline in types (to avoid unfolding of goals)
     Def f es -> do
-      def <- theDef <$> getConstInfo f
-      case def of   -- Only for simple definitions with no pattern matching (TODO: maybe copatterns?)
-        Function{ funCompiled = Just Done{}, funDelayed = NotDelayed }
+      def <- getConstInfo f
+      -- Don't inline in types (to avoid unfolding of goals), unless it's a copy.
+      inTypes <- viewTC eWorkingOnTypes
+      let noInline = inTypes && not (defCopy def)
+      case theDef def of   -- Only for simple definitions with no pattern matching (TODO: maybe copatterns?)
+        _ | noInline -> return v
+        def@Function{ funCompiled = Just Done{}, funDelayed = NotDelayed }
           | def ^. funInline -> liftReduce $
           ignoreBlocking <$> unfoldDefinitionE False (return . notBlocked) (Def f []) f es
         _ -> return v
