@@ -54,19 +54,15 @@ pattern fun₂ p q b = function (clause (p ∷ q ∷ []) b ∷ [])
 foo-def : getDef foo ≡ fun₁ (iArg (var "r")) (def (quote Foo.foo) (`? ∷ vArg (var 0 []) ∷ []))
 foo-def = refl
 
--- Andreas, 2018-03-12: Behavior before fix of #2963:
--- foo₁ {{r}} = Foo.foo₁ {_} r
--- foo₁-def : getDef foo₁ ≡ fun₁ (iArg (var "r")) (def (quote Foo.foo₁) (`? ∷ vArg (var 0 []) ∷ []))
--- NOW:
--- foo₁ {A} {{r}} = Foo.foo₁ {A} r
-foo₁-def : getDef foo₁ ≡ fun₂ (hArg (var "A")) (iArg (var "r")) (def (quote Foo.foo₁) (hArg (var 1 []) ∷ vArg (var 0 []) ∷ []))
+-- foo {{r}} = Foo.foo {_} r
+foo₁-def : getDef foo₁ ≡ fun₁ (iArg (var "r")) (def (quote Foo.foo) (`? ∷ vArg (var 0 []) ∷ []))
 foo₁-def = refl
 
--- bar = foo {_} FooA
+-- bar = Foo.foo {_} FooA
 bar-def : getDef bar ≡ fun₀ (def (quote Foo.foo) (`? ∷ vArg (def (quote FooA) []) ∷ []))
 bar-def = refl
 
--- bar₁ = foo {_} FooA
+-- bar₁ = Foo.foo {_} FooA
 bar₁-def : getDef bar₁ ≡ fun₀ (def (quote Foo.foo) (`? ∷ vArg (def (quote FooA) []) ∷ []))
 bar₁-def =  refl
 
